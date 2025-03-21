@@ -16,7 +16,7 @@
     "fb-downloader": "^1.0.3",
     "node-fetch": "^3.3.2",
     "pinterest-scraper": "^0.0.2",
-    "puppeteer-core": "^21.6.1",
+    "puppeteer": "^21.6.1",
     "soundcloud-downloader": "^1.0.0",
     "tiktok-scraper": "^1.4.36",
     "youtube-dl-exec": "^2.4.17",
