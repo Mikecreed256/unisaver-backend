@@ -150,8 +150,19 @@ async function extractTikTokMedia(url) {
   try {
     // Strategy 1: Use Puppeteer to extract media (most reliable)
     browser = await puppeteer.launch({
-      headless: 'new', // Use new headless mode
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security']
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-web-security',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu'
+      ],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
     });
 
     const page = await browser.newPage();
