@@ -3324,4 +3324,4 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Enhanced multi-platform server running on port ${PORT}`);
   console.log(`Server accessible at http://localhost:${PORT}`);
   console.log(`Temporary directory: ${TEMP_DIR}`);
-});
+});}
