@@ -11,14 +11,18 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@yimura/scraper": "^1.2.4",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "facebook-nodejs-business-sdk": "^22.0.0",
     "fb-downloader": "^1.0.3",
     "node-fetch": "^3.3.2",
+    "pinterest-node-api": "^0.0.9",
     "pinterest-scraper": "^0.0.2",
     "soundcloud-downloader": "^1.0.0",
     "tiktok-scraper": "^1.4.36",
-    "youtube-dl-exec": "^3.0.19"
+    "youtube-dl-exec": "^3.0.19",
+    "ytdl-core": "^4.11.5"
   }
 }
