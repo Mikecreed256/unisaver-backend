@@ -986,8 +986,8 @@ app.get('/api/direct', async (req, res) => {
 });
 
 // Start server
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Server accessible at http://localhost:${PORT} and http://192.168.1.136:${PORT}`);
   console.log(`Temporary directory: ${TEMP_DIR}`);
 });
