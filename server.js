@@ -12,8 +12,7 @@ const fbDownloader = require('fb-downloader');
 const tikTokScraper = require('tiktok-scraper');
 const pinterestScraper = require('pinterest-scraper');
 const SoundCloud = require('soundcloud-downloader').default;
-const puppeteer = require('puppeteer');         // Added for enhanced scraping
-
+const puppeteer = require('puppeteer-core');
 // For ES module imports like node-fetch
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
@@ -26,7 +25,16 @@ const TEMP_DIR = path.join(__dirname, 'temp');
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR);
 }
+// .puppeteerrc.cjs
+const {join} = require('path');
 
+/**
+ * @type {import('puppeteer').Configuration}
+ */
+module.exports = {
+  // Skip Chromium download
+  skipDownload: true,
+}
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -149,21 +157,26 @@ async function extractTikTokMedia(url) {
 
   try {
     // Strategy 1: Use Puppeteer to extract media (most reliable)
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-web-security',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu'
-      ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
-    });
+browser = await puppeteer.launch({
+  headless: 'new',
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-web-security',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--single-process',
+    '--disable-gpu'
+  ],
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 
+    // Default Chromium paths on different platforms
+    (process.platform === 'linux' ? '/usr/bin/chromium-browser' : 
+     process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' :
+     process.platform === 'win32' ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : 
+     undefined)
+});
 
     const page = await browser.newPage();
 
