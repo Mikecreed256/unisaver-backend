@@ -977,7 +977,6 @@ async function extractInstagramMedia(url) {
     }
   }
 }
-
 // =============== ENHANCED PINTEREST EXTRACTION WITH PUPPETEER ===============
 async function extractPinterestMedia(url) {
   console.log(`Extracting Pinterest media from: ${url}`);
@@ -2576,7 +2575,7 @@ app.get('/api/soundcloud', async (req, res) => {
 
   // Fallback to youtube-dl if SoundCloud downloader fails
   try {
-    const info = await youtubeDl(url, {
+    const info = await youtubeDl(req.query.url, {
       dumpSingleJson: true,
       noCheckCertificates: true,
       noWarnings: true,
