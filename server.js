@@ -1259,13 +1259,10 @@ async function extractPinterestMedia(url) {
   } finally {
     // Always close the browser
     if (browser) {
-      try {
-        await browser.close();
-      } catch (closeErr) {
-        console.error('Error closing browser:', closeErr);
-      }
+      await browser.close();
     }
-
+  }
+}
 
 // =============== ENHANCED FACEBOOK EXTRACTION WITH PUPPETEER ===============
 async function extractFacebookVideo(url) {
@@ -3324,4 +3321,4 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Enhanced multi-platform server running on port ${PORT}`);
   console.log(`Server accessible at http://localhost:${PORT}`);
   console.log(`Temporary directory: ${TEMP_DIR}`);
-});}
+});
