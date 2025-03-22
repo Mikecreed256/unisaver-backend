@@ -1,7 +1,6 @@
 {
   "dependencies": {
     "@yimura/scraper": "^1.2.4",
-    "btch-downloader": "^3.7.18",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "fb-downloader": "^1.0.3",
