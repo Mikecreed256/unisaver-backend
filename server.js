@@ -1,4 +1,3 @@
-/ server.js - Complete solution with all platform support
 const express = require('express');
 const cors = require('cors');
 const youtubeDl = require('youtube-dl-exec');
