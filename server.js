@@ -1,34 +1,17 @@
-// server.js - Enhanced with specialized downloaders
+// server.js - Simplified with reliable dependencies
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
-const https = require('https');
-const fetch = require('node-fetch');
-const cheerio = require('cheerio');
-const NodeCache = require('memory-cache');
-const rateLimit = require('express-rate-limit');
 const axios = require('axios');
+const cheerio = require('cheerio');
+const NodeCache = require('node-cache');
+const { createHash } = require('crypto');
 const puppeteer = require('puppeteer-core');
-
-// Alternative downloaders for specific platforms
-const { download: snapsaveDownload } = require('@bochilteam/scraper-snapsave');
-const { facebook } = require('@mrnima/facebook-downloader');
-const fbDownloader = require('@xaviabot/fb-downloader');
-const { downloadTikTok } = require('shaon-media-downloader');
-const { tikTokVideoDownloader } = require('nayan-videos-downloader');
-const mediaDownloader = require('videos-downloader');
-const { ytmp4, ytmp3 } = require('ytdownloader.js');
-const ytFinder = require('yt-finder-nextgen');
-const { ytDl } = require('tube-dl-custom-action');
-const { getDownload: btchDownload } = require('btch-downloader');
-const { download: imranDlMedia } = require('imran-dlmedia');
-const { pinterest: rahadPinterest } = require('rahad-all-downloader');
-const { twitter: xScrapper } = require('x-scrapper');
+const rateLimit = require('express-rate-limit');
 
 // Initialize cache with 1 hour TTL
-const mediaCache = new NodeCache(3600000); // 1 hour in milliseconds
+const mediaCache = new NodeCache({ stdTTL: 3600 });
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -66,12 +49,6 @@ const limiter = rateLimit({
 app.use(cors());
 app.use(express.json());
 app.use(limiter);
-
-// Increase timeout for external requests
-http.globalAgent.maxSockets = 25;
-https.globalAgent.maxSockets = 25;
-http.globalAgent.keepAlive = true;
-https.globalAgent.keepAlive = true;
 
 // Routes
 app.get('/', (req, res) => {
@@ -168,7 +145,7 @@ function getRandomUserAgent() {
 }
 
 // Utility: Retry mechanism
-async function retryOperation(operation, retries = 3, delay = 1000, backoff = 2) {
+async function retryOperation(operation, retries = 3, delay = 1000) {
   let lastError;
   
   for (let i = 0; i < retries; i++) {
@@ -178,10 +155,9 @@ async function retryOperation(operation, retries = 3, delay = 1000, backoff = 2)
       console.log(`Attempt ${i + 1} failed: ${error.message}`);
       lastError = error;
       
-      // Wait before next retry with exponential backoff
       if (i < retries - 1) {
         await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= backoff; // Exponential backoff
+        delay *= 2; // Exponential backoff
       }
     }
   }
@@ -189,7 +165,12 @@ async function retryOperation(operation, retries = 3, delay = 1000, backoff = 2)
   throw lastError;
 }
 
-// TikTok handler with multiple library approach
+// Utility: Create a cache key
+function createCacheKey(url) {
+  return createHash('md5').update(url).digest('hex');
+}
+
+// TikTok handler with puppeteer
 app.get('/api/tiktok', async (req, res) => {
   try {
     const url = req.query.url;
@@ -199,7 +180,7 @@ app.get('/api/tiktok', async (req, res) => {
     }
 
     // Check cache first
-    const cacheKey = `tiktok:${url}`;
+    const cacheKey = createCacheKey(`tiktok:${url}`);
     const cachedData = mediaCache.get(cacheKey);
     if (cachedData) {
       console.log(`Serving TikTok data from cache for ${url}`);
@@ -215,229 +196,232 @@ app.get('/api/tiktok', async (req, res) => {
       videoId = idMatch[1];
     }
     
-    // Multi-library approach
-    // Try different TikTok downloaders one by one
-    let result = null;
-    
-    // Method 1: shaon-media-downloader
+    // Try puppeteer for browser-based extraction
     try {
-      console.log('Trying shaon-media-downloader for TikTok...');
-      const downloadData = await downloadTikTok(url);
+      console.log('Using puppeteer for TikTok...');
       
-      if (downloadData && downloadData.video) {
-        result = {
-          title: downloadData.title || `TikTok Video ${videoId}`,
-          thumbnails: downloadData.thumbnail ? [{ url: downloadData.thumbnail, width: 480, height: 480 }] : [],
-          formats: [{
-            itag: 'tt_hd',
-            quality: 'HD',
-            mimeType: 'video/mp4',
-            url: downloadData.video,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          }],
-          platform: 'tiktok',
-          mediaType: 'video',
-          directUrl: `/api/direct?url=${encodeURIComponent(downloadData.video)}`
-        };
-      }
-    } catch (err) {
-      console.error('shaon-media-downloader failed:', err.message);
-    }
-    
-    // Method 2: nayan-videos-downloader
-    if (!result) {
-      try {
-        console.log('Trying nayan-videos-downloader for TikTok...');
-        const ttData = await tikTokVideoDownloader(url);
+      // Use puppeteer-core with different executable paths for different environments
+      let executablePath;
+      
+      if (process.platform === 'linux') {
+        // Common paths on Linux/Render
+        const possiblePaths = [
+          '/usr/bin/chromium-browser',
+          '/usr/bin/chromium',
+          '/opt/google/chrome/chrome',
+          '/usr/bin/google-chrome'
+        ];
         
-        if (ttData && ttData.links && ttData.links.length > 0) {
-          const videoUrl = ttData.links[0].url;
-          
-          result = {
-            title: ttData.title || `TikTok Video ${videoId}`,
-            thumbnails: ttData.thumbnail ? [{ url: ttData.thumbnail, width: 480, height: 480 }] : [],
-            formats: [{
-              itag: 'tt_hd',
-              quality: 'HD',
-              mimeType: 'video/mp4',
-              url: videoUrl,
-              hasAudio: true,
-              hasVideo: true,
-              contentLength: 0,
-              container: 'mp4'
-            }],
-            platform: 'tiktok',
-            mediaType: 'video',
-            directUrl: `/api/direct?url=${encodeURIComponent(videoUrl)}`
-          };
+        for (const path of possiblePaths) {
+          if (fs.existsSync(path)) {
+            executablePath = path;
+            break;
+          }
         }
-      } catch (err) {
-        console.error('nayan-videos-downloader failed:', err.message);
+      } else if (process.platform === 'win32') {
+        executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+      } else if (process.platform === 'darwin') {
+        executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
       }
-    }
-    
-    // Method 3: videos-downloader
-    if (!result) {
+      
+      const browser = await puppeteer.launch({
+        headless: 'new',
+        executablePath: executablePath,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu'
+        ]
+      });
+      
       try {
-        console.log('Trying videos-downloader for TikTok...');
-        const response = await mediaDownloader.tiktok(url);
+        const page = await browser.newPage();
         
-        if (response && response.success && response.data && response.data.no_watermark) {
-          const videoUrl = response.data.no_watermark;
-          
-          result = {
-            title: response.data.title || `TikTok Video ${videoId}`,
-            thumbnails: response.data.cover ? [{ url: response.data.cover, width: 480, height: 480 }] : [],
-            formats: [{
-              itag: 'tt_nw',
-              quality: 'No Watermark',
-              mimeType: 'video/mp4',
-              url: videoUrl,
-              hasAudio: true,
-              hasVideo: true,
-              contentLength: 0,
-              container: 'mp4'
-            }],
-            platform: 'tiktok',
-            mediaType: 'video',
-            directUrl: `/api/direct?url=${encodeURIComponent(videoUrl)}`
-          };
-        }
-      } catch (err) {
-        console.error('videos-downloader failed:', err.message);
-      }
-    }
-    
-    // Method 4: btch-downloader
-    if (!result) {
-      try {
-        console.log('Trying btch-downloader for TikTok...');
-        const btchResult = await btchDownload('tiktok', url);
+        // Set user agent to mobile
+        await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1');
         
-        if (btchResult && btchResult.status === 'success' && btchResult.result) {
-          const data = btchResult.result;
-          const videoUrl = data.video;
-          
-          result = {
-            title: data.title || data.desc || `TikTok Video ${videoId}`,
-            thumbnails: data.thumbnail ? [{ url: data.thumbnail, width: 480, height: 480 }] : [],
-            formats: [{
-              itag: 'tt_btch',
-              quality: 'High',
-              mimeType: 'video/mp4',
-              url: videoUrl,
-              hasAudio: true,
-              hasVideo: true,
-              contentLength: 0,
-              container: 'mp4'
-            }],
-            platform: 'tiktok',
-            mediaType: 'video',
-            directUrl: `/api/direct?url=${encodeURIComponent(videoUrl)}`
-          };
-        }
-      } catch (err) {
-        console.error('btch-downloader failed:', err.message);
-      }
-    }
-    
-    // Method 5: SnapSave approach
-    if (!result) {
-      try {
-        console.log('Trying SnapSave for TikTok...');
-        const snapSaveResult = await snapsaveDownload(url);
+        // Navigate to TikTok page
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        if (snapSaveResult && snapSaveResult.length > 0) {
-          const videoUrl = snapSaveResult[0].url;
-          
-          result = {
-            title: `TikTok Video ${videoId}`,
-            thumbnails: [],
-            formats: [{
-              itag: 'tt_snap',
-              quality: 'High',
-              mimeType: 'video/mp4',
-              url: videoUrl,
-              hasAudio: true,
-              hasVideo: true,
-              contentLength: 0,
-              container: 'mp4'
-            }],
-            platform: 'tiktok',
-            mediaType: 'video',
-            directUrl: `/api/direct?url=${encodeURIComponent(videoUrl)}`
-          };
-        }
-      } catch (err) {
-        console.error('SnapSave approach failed:', err.message);
-      }
-    }
-    
-    // Method 6: Fallback to puppeteer for browser-based extraction
-    if (!result) {
-      try {
-        console.log('Trying puppeteer for TikTok...');
+        // Wait for video element to load (if possible)
+        await page.waitForSelector('video', { timeout: 10000 }).catch(() => console.log('Video element not found'));
         
-        // Try to use puppeteer-core first with chromium
-        let browser;
-        try {
-          browser = await puppeteer.launch({
-            headless: 'new',
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-accelerated-2d-canvas',
-              '--disable-gpu'
-            ]
-          });
-        } catch (puppErr) {
-          console.error('Error launching puppeteer:', puppErr.message);
-          throw new Error('Failed to initialize browser');
-        }
-        
-        try {
-          const page = await browser.newPage();
-          
-          // Set user agent
-          await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1');
-          
-          // Navigate to TikTok page
-          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          
-          // Wait for video element to load
-          await page.waitForSelector('video', { timeout: 10000 }).catch(() => console.log('Video element not found'));
-          
-          // Extract video source
-          const videoSrc = await page.evaluate(() => {
-            const videoElem = document.querySelector('video');
-            return videoElem ? videoElem.src : null;
-          });
+        // Extract video source
+        const videoData = await page.evaluate(() => {
+          // Try to find video source
+          const videoElem = document.querySelector('video');
+          const videoSrc = videoElem ? videoElem.src : null;
           
           // Extract title and thumbnail
-          const pageData = await page.evaluate(() => {
-            const titleElem = document.querySelector('h1, .tiktok-title, .video-title');
-            const title = titleElem ? titleElem.innerText : '';
+          const titleElem = document.querySelector('h1, .tiktok-title, .video-title');
+          const title = titleElem ? titleElem.innerText : '';
+          
+          // Look for thumbnail in meta tags
+          const ogImage = document.querySelector('meta[property="og:image"]');
+          const thumbnail = ogImage ? ogImage.getAttribute('content') : '';
+          
+          return { 
+            videoSrc, 
+            title, 
+            thumbnail,
+            // Also look for metadata in script tags
+            metaJson: Array.from(document.querySelectorAll('script[type="application/json"]'))
+              .map(script => script.textContent)
+              .join('\n')
+          };
+        });
+        
+        // If direct video source found
+        if (videoData.videoSrc) {
+          const result = {
+            title: videoData.title || `TikTok Video ${videoId}`,
+            thumbnails: videoData.thumbnail ? [{ url: videoData.thumbnail, width: 480, height: 480 }] : [],
+            formats: [{
+              itag: 'tt_direct',
+              quality: 'Original',
+              mimeType: 'video/mp4',
+              url: videoData.videoSrc,
+              hasAudio: true,
+              hasVideo: true,
+              contentLength: 0,
+              container: 'mp4'
+            }],
+            platform: 'tiktok',
+            mediaType: 'video',
+            directUrl: `/api/direct?url=${encodeURIComponent(videoData.videoSrc)}`
+          };
+          
+          // Cache the result
+          mediaCache.set(cacheKey, result);
+          
+          return res.json(result);
+        }
+        
+        // Try to extract from metadata if video source not found directly
+        if (videoData.metaJson) {
+          // Look for video URLs in the metadata
+          const metaMatches = videoData.metaJson.match(/"playAddr":"([^"]+)"/g);
+          
+          if (metaMatches && metaMatches.length > 0) {
+            // Extract URLs and clean them
+            const videoUrls = metaMatches.map(match => {
+              const urlMatch = match.match(/"playAddr":"([^"]+)"/);
+              return urlMatch[1].replace(/\\u002F/g, '/');
+            });
             
-            // Look for thumbnail in meta tags
-            const ogImage = document.querySelector('meta[property="og:image"]');
-            const thumbnail = ogImage ? ogImage.getAttribute('content') : '';
-            
-            return { title, thumbnail };
+            if (videoUrls.length > 0) {
+              const result = {
+                title: videoData.title || `TikTok Video ${videoId}`,
+                thumbnails: videoData.thumbnail ? [{ url: videoData.thumbnail, width: 480, height: 480 }] : [],
+                formats: [{
+                  itag: 'tt_meta',
+                  quality: 'Original',
+                  mimeType: 'video/mp4',
+                  url: videoUrls[0],
+                  hasAudio: true,
+                  hasVideo: true,
+                  contentLength: 0,
+                  container: 'mp4'
+                }],
+                platform: 'tiktok',
+                mediaType: 'video',
+                directUrl: `/api/direct?url=${encodeURIComponent(videoUrls[0])}`
+              };
+              
+              // Cache the result
+              mediaCache.set(cacheKey, result);
+              
+              return res.json(result);
+            }
+          }
+        }
+      } finally {
+        await browser.close();
+      }
+    } catch (puppeteerErr) {
+      console.error('Puppeteer approach failed:', puppeteerErr);
+    }
+    
+    // Try direct API approach as fallback
+    try {
+      console.log('Trying direct API approach for TikTok...');
+      
+      const response = await axios.get(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5'
+        }
+      });
+      
+      if (response.status === 200 && response.data) {
+        const html = response.data;
+        const $ = cheerio.load(html);
+        
+        // Look for video in meta tags
+        const ogVideoUrl = $('meta[property="og:video"]').attr('content');
+        const ogVideoSecureUrl = $('meta[property="og:video:secure_url"]').attr('content');
+        const videoUrl = ogVideoSecureUrl || ogVideoUrl;
+        
+        // Get thumbnail
+        const ogImageUrl = $('meta[property="og:image"]').attr('content');
+        
+        // Get title
+        const ogTitle = $('meta[property="og:title"]').attr('content');
+        const title = ogTitle || $('title').text() || `TikTok Video ${videoId}`;
+        
+        if (videoUrl) {
+          const result = {
+            title: title,
+            thumbnails: ogImageUrl ? [{ url: ogImageUrl, width: 480, height: 480 }] : [],
+            formats: [{
+              itag: 'tt_api',
+              quality: 'Original',
+              mimeType: 'video/mp4',
+              url: videoUrl,
+              hasAudio: true,
+              hasVideo: true,
+              contentLength: 0,
+              container: 'mp4'
+            }],
+            platform: 'tiktok',
+            mediaType: 'video',
+            directUrl: `/api/direct?url=${encodeURIComponent(videoUrl)}`
+          };
+          
+          // Cache the result
+          mediaCache.set(cacheKey, result);
+          
+          return res.json(result);
+        }
+        
+        // Look for playAddr in script tags
+        const scriptContents = [];
+        $('script').each(function() {
+          scriptContents.push($(this).html());
+        });
+        
+        const combined = scriptContents.join('\n');
+        const videoMatches = combined.match(/"playAddr":"([^"]+)"/g);
+        
+        if (videoMatches && videoMatches.length > 0) {
+          // Extract URLs and clean them
+          const extractedUrls = videoMatches.map(match => {
+            const urlMatch = match.match(/"playAddr":"([^"]+)"/);
+            return urlMatch[1].replace(/\\u002F/g, '/');
           });
           
-          if (videoSrc) {
-            result = {
-              title: pageData.title || `TikTok Video ${videoId}`,
-              thumbnails: pageData.thumbnail ? [{ url: pageData.thumbnail, width: 480, height: 480 }] : [],
+          if (extractedUrls.length > 0) {
+            const result = {
+              title: title,
+              thumbnails: ogImageUrl ? [{ url: ogImageUrl, width: 480, height: 480 }] : [],
               formats: [{
-                itag: 'tt_pup',
-                quality: 'Browser Extract',
+                itag: 'tt_script',
+                quality: 'Original',
                 mimeType: 'video/mp4',
-                url: videoSrc,
+                url: extractedUrls[0],
                 hasAudio: true,
                 hasVideo: true,
                 contentLength: 0,
@@ -445,30 +429,25 @@ app.get('/api/tiktok', async (req, res) => {
               }],
               platform: 'tiktok',
               mediaType: 'video',
-              directUrl: `/api/direct?url=${encodeURIComponent(videoSrc)}`
+              directUrl: `/api/direct?url=${encodeURIComponent(extractedUrls[0])}`
             };
+            
+            // Cache the result
+            mediaCache.set(cacheKey, result);
+            
+            return res.json(result);
           }
-        } finally {
-          await browser.close();
         }
-      } catch (puppeteerErr) {
-        console.error('Puppeteer approach failed:', puppeteerErr.message);
       }
+    } catch (directErr) {
+      console.error('Direct API approach failed:', directErr);
     }
 
     // If all methods fail, return error
-    if (!result) {
-      return res.status(404).json({
-        error: 'No videos found in this TikTok',
-        details: 'All extraction methods failed. This might be a private video or require login.'
-      });
-    }
-
-    // Cache the result
-    mediaCache.put(cacheKey, result);
-
-    // Return the video info
-    res.json(result);
+    return res.status(404).json({
+      error: 'No videos found in this TikTok',
+      details: 'All extraction methods failed. This might be a private video or require login.'
+    });
 
   } catch (error) {
     console.error('TikTok error:', error);
@@ -476,7 +455,7 @@ app.get('/api/tiktok', async (req, res) => {
   }
 });
 
-// Pinterest handler with improved video support
+// Pinterest handler with puppeteer
 app.get('/api/pinterest', async (req, res) => {
   try {
     const { url } = req.query;
@@ -486,7 +465,7 @@ app.get('/api/pinterest', async (req, res) => {
     }
 
     // Check cache first
-    const cacheKey = `pinterest:${url}`;
+    const cacheKey = createCacheKey(`pinterest:${url}`);
     const cachedData = mediaCache.get(cacheKey);
     if (cachedData) {
       console.log(`Serving Pinterest data from cache for ${url}`);
@@ -495,167 +474,44 @@ app.get('/api/pinterest', async (req, res) => {
 
     console.log(`Processing Pinterest URL: ${url}`);
     
-    // Method 1: Try rahad-all-downloader
-    try {
-      console.log('Trying rahad-all-downloader for Pinterest...');
-      const pinterestData = await rahadPinterest(url);
-      
-      if (pinterestData && pinterestData.status === 'success' && pinterestData.data) {
-        const data = pinterestData.data;
-        const mediaUrl = data.url || data.video_url || data.image_url;
-        const isVideo = data.video_url || data.type === 'video';
-        
-        if (mediaUrl) {
-          const result = {
-            title: data.title || data.description || 'Pinterest Media',
-            thumbnails: data.thumbnail ? [{ url: data.thumbnail, width: 480, height: 480 }] : [],
-            formats: [{
-              itag: isVideo ? 'pin_vid' : 'pin_img',
-              quality: 'Original',
-              mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-              url: mediaUrl,
-              hasAudio: isVideo,
-              hasVideo: isVideo,
-              contentLength: 0,
-              container: isVideo ? 'mp4' : 'jpeg'
-            }],
-            platform: 'pinterest',
-            mediaType: isVideo ? 'video' : 'image',
-            directUrl: `/api/direct?url=${encodeURIComponent(mediaUrl)}`
-          };
-          
-          // Cache the result
-          mediaCache.put(cacheKey, result);
-          
-          return res.json(result);
-        }
-      }
-    } catch (err) {
-      console.error('rahad-all-downloader failed:', err.message);
+    // Extract pin ID
+    let pinId = '';
+    const pinMatch = url.match(/pin\/(\d+)/);
+    if (pinMatch && pinMatch[1]) {
+      pinId = pinMatch[1];
     }
     
-    // Method 2: Try imranDlMedia
+    // Try puppeteer for browser-based extraction
     try {
-      console.log('Trying imran-dlmedia for Pinterest...');
-      const imranResult = await imranDlMedia('pinterest', url);
+      console.log('Using puppeteer for Pinterest...');
       
-      if (imranResult && imranResult.success) {
-        const mediaUrl = imranResult.url || imranResult.video || imranResult.image;
-        const isVideo = imranResult.video || imranResult.type === 'video';
-        
-        if (mediaUrl) {
-          const result = {
-            title: imranResult.title || 'Pinterest Media',
-            thumbnails: imranResult.thumbnail ? [{ url: imranResult.thumbnail, width: 480, height: 480 }] : [],
-            formats: [{
-              itag: isVideo ? 'pin_imran_vid' : 'pin_imran_img',
-              quality: 'Original',
-              mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-              url: mediaUrl,
-              hasAudio: isVideo,
-              hasVideo: isVideo,
-              contentLength: 0,
-              container: isVideo ? 'mp4' : 'jpeg'
-            }],
-            platform: 'pinterest',
-            mediaType: isVideo ? 'video' : 'image',
-            directUrl: `/api/direct?url=${encodeURIComponent(mediaUrl)}`
-          };
-          
-          // Cache the result
-          mediaCache.put(cacheKey, result);
-          
-          return res.json(result);
-        }
-      }
-    } catch (err) {
-      console.error('imran-dlmedia failed:', err.message);
-    }
-    
-    // Method 3: Try using Axios with different user agents
-    try {
-      console.log('Trying direct extraction for Pinterest...');
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-        }
-      });
+      // Use puppeteer-core with different executable paths for different environments
+      let executablePath;
       
-      if (response.status === 200) {
-        const html = response.data;
-        const $ = cheerio.load(html);
+      if (process.platform === 'linux') {
+        // Common paths on Linux/Render
+        const possiblePaths = [
+          '/usr/bin/chromium-browser',
+          '/usr/bin/chromium',
+          '/opt/google/chrome/chrome',
+          '/usr/bin/google-chrome'
+        ];
         
-        // Look for video first
-        let videoUrl = '';
-        const ogVideo = $('meta[property="og:video"]').attr('content');
-        const ogVideoSecure = $('meta[property="og:video:secure_url"]').attr('content');
-        
-        if (ogVideoSecure) {
-          videoUrl = ogVideoSecure;
-        } else if (ogVideo) {
-          videoUrl = ogVideo;
-        }
-        
-        // Look for image if no video
-        let imageUrl = '';
-        if (!videoUrl) {
-          const ogImage = $('meta[property="og:image"]').attr('content');
-          const ogImageSecure = $('meta[property="og:image:secure_url"]').attr('content');
-          
-          if (ogImageSecure) {
-            imageUrl = ogImageSecure;
-          } else if (ogImage) {
-            imageUrl = ogImage;
+        for (const path of possiblePaths) {
+          if (fs.existsSync(path)) {
+            executablePath = path;
+            break;
           }
         }
-        
-        // Get title
-        let title = 'Pinterest Media';
-        const ogTitle = $('meta[property="og:title"]').attr('content');
-        if (ogTitle) {
-          title = ogTitle;
-        }
-        
-        const mediaUrl = videoUrl || imageUrl;
-        const isVideo = !!videoUrl;
-        
-        if (mediaUrl) {
-          const result = {
-            title: title,
-            thumbnails: [{ url: imageUrl || videoUrl, width: 480, height: 480 }],
-            formats: [{
-              itag: isVideo ? 'pin_og_vid' : 'pin_og_img',
-              quality: 'Original',
-              mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-              url: mediaUrl,
-              hasAudio: isVideo,
-              hasVideo: isVideo,
-              contentLength: 0,
-              container: isVideo ? 'mp4' : 'jpeg'
-            }],
-            platform: 'pinterest',
-            mediaType: isVideo ? 'video' : 'image',
-            directUrl: `/api/direct?url=${encodeURIComponent(mediaUrl)}`
-          };
-          
-          // Cache the result
-          mediaCache.put(cacheKey, result);
-          
-          return res.json(result);
-        }
+      } else if (process.platform === 'win32') {
+        executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+      } else if (process.platform === 'darwin') {
+        executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
       }
-    } catch (err) {
-      console.error('Direct extraction failed:', err.message);
-    }
-    
-    // Method 4: Try puppeteer for browser-based extraction
-    try {
-      console.log('Trying puppeteer for Pinterest...');
       
       const browser = await puppeteer.launch({
         headless: 'new',
+        executablePath: executablePath,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -706,6 +562,22 @@ app.get('/api/pinterest', async (req, res) => {
             };
           }
           
+          // Look for video URL in script tags
+          const scripts = document.querySelectorAll('script');
+          for (const script of scripts) {
+            const content = script.textContent;
+            if (content && content.includes('v.pinimg.com')) {
+              const match = content.match(/https:\/\/v\.pinimg\.com\/[a-zA-Z0-9\/\._-]+\.mp4/i);
+              if (match) {
+                return {
+                  type: 'video',
+                  url: match[0],
+                  thumbnail: document.querySelector('meta[property="og:image"]')?.getAttribute('content')
+                };
+              }
+            }
+          }
+          
           return null;
         });
         
@@ -723,7 +595,7 @@ app.get('/api/pinterest', async (req, res) => {
             title: title,
             thumbnails: mediaData.thumbnail ? [{ url: mediaData.thumbnail, width: 480, height: 480 }] : [],
             formats: [{
-              itag: isVideo ? 'pin_pup_vid' : 'pin_pup_img',
+              itag: isVideo ? 'pin_vid' : 'pin_img',
               quality: 'Original',
               mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
               url: mediaData.url,
@@ -738,7 +610,7 @@ app.get('/api/pinterest', async (req, res) => {
           };
           
           // Cache the result
-          mediaCache.put(cacheKey, result);
+          mediaCache.set(cacheKey, result);
           
           return res.json(result);
         }
@@ -746,7 +618,102 @@ app.get('/api/pinterest', async (req, res) => {
         await browser.close();
       }
     } catch (puppeteerErr) {
-      console.error('Puppeteer approach failed:', puppeteerErr.message);
+      console.error('Puppeteer approach failed:', puppeteerErr);
+    }
+    
+    // Try direct API approach as fallback
+    try {
+      console.log('Trying direct API approach for Pinterest...');
+      
+      const response = await axios.get(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5'
+        }
+      });
+      
+      if (response.status === 200 && response.data) {
+        const html = response.data;
+        const $ = cheerio.load(html);
+        
+        // Look for video first
+        let videoUrl = '';
+        const ogVideo = $('meta[property="og:video"]').attr('content');
+        const ogVideoSecure = $('meta[property="og:video:secure_url"]').attr('content');
+        
+        if (ogVideoSecure) {
+          videoUrl = ogVideoSecure;
+        } else if (ogVideo) {
+          videoUrl = ogVideo;
+        }
+        
+        // If no metadata video, try regexp for v.pinimg.com URLs
+        if (!videoUrl) {
+          const videoMatch = html.match(/https:\/\/v\.pinimg\.com\/[a-zA-Z0-9\/\._-]+\.mp4/gi);
+          if (videoMatch && videoMatch.length > 0) {
+            videoUrl = videoMatch[0];
+          }
+        }
+        
+        // Look for image if no video
+        let imageUrl = '';
+        if (!videoUrl) {
+          const ogImage = $('meta[property="og:image"]').attr('content');
+          const ogImageSecure = $('meta[property="og:image:secure_url"]').attr('content');
+          
+          if (ogImageSecure) {
+            imageUrl = ogImageSecure;
+          } else if (ogImage) {
+            imageUrl = ogImage;
+          }
+        }
+        
+        // If no metadata image, try regexp for i.pinimg.com URLs
+        if (!imageUrl) {
+          const imageMatch = html.match(/https:\/\/i\.pinimg\.com\/originals\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif)/gi);
+          if (imageMatch && imageMatch.length > 0) {
+            imageUrl = imageMatch[0];
+          }
+        }
+        
+        // Get title
+        let title = 'Pinterest Media';
+        const ogTitle = $('meta[property="og:title"]').attr('content');
+        if (ogTitle) {
+          title = ogTitle;
+        }
+        
+        const mediaUrl = videoUrl || imageUrl;
+        const isVideo = !!videoUrl;
+        
+        if (mediaUrl) {
+          const result = {
+            title: title,
+            thumbnails: [{ url: imageUrl || videoUrl, width: 480, height: 480 }],
+            formats: [{
+              itag: isVideo ? 'pin_vid_api' : 'pin_img_api',
+              quality: 'Original',
+              mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
+              url: mediaUrl,
+              hasAudio: isVideo,
+              hasVideo: isVideo,
+              contentLength: 0,
+              container: isVideo ? 'mp4' : 'jpeg'
+            }],
+            platform: 'pinterest',
+            mediaType: isVideo ? 'video' : 'image',
+            directUrl: `/api/direct?url=${encodeURIComponent(mediaUrl)}`
+          };
+          
+          // Cache the result
+          mediaCache.set(cacheKey, result);
+          
+          return res.json(result);
+        }
+      }
+    } catch (directErr) {
+      console.error('Direct API approach failed:', directErr);
     }
 
     // If all methods fail, return error
@@ -761,7 +728,7 @@ app.get('/api/pinterest', async (req, res) => {
   }
 });
 
-// Enhanced YouTube handler with anti-rate limiting
+// YouTube handler with browser approach
 app.get('/api/youtube', async (req, res) => {
   try {
     const url = req.query.url;
@@ -771,7 +738,7 @@ app.get('/api/youtube', async (req, res) => {
     }
 
     // Check cache first
-    const cacheKey = `youtube:${url}`;
+    const cacheKey = createCacheKey(`youtube:${url}`);
     const cachedData = mediaCache.get(cacheKey);
     if (cachedData) {
       console.log(`Serving YouTube data from cache for ${url}`);
@@ -792,258 +759,181 @@ app.get('/api/youtube', async (req, res) => {
       throw new Error('Could not extract YouTube video ID from URL');
     }
     
-    // Multi-library approach
-    let videoInfo = null;
-    
-    // Method 1: ytmp4 from ytdownloader.js
+    // Puppeteer approach
     try {
-      console.log('Trying ytdownloader.js for YouTube...');
-      const yt = await ytmp4(url);
+      console.log('Using puppeteer for YouTube...');
       
-      if (yt && yt.url) {
-        videoInfo = {
-          title: yt.title || `YouTube Video ${videoId}`,
-          thumbnails: [{ url: yt.thumb || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 }],
-          formats: [{
-            itag: 'mp4',
-            quality: yt.quality || 'HD',
-            mimeType: 'video/mp4',
-            url: yt.url,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          }],
-          platform: 'youtube',
-          mediaType: 'video',
-          directUrl: `/api/direct?url=${encodeURIComponent(yt.url)}`
-        };
-      }
-    } catch (err) {
-      console.error('ytdownloader.js failed:', err.message);
-    }
-    
-    // Method 2: yt-finder-nextgen
-    if (!videoInfo) {
-      try {
-        console.log('Trying yt-finder-nextgen for YouTube...');
-        const ytInfo = await ytFinder(videoId);
+      // Use puppeteer-core with different executable paths for different environments
+      let executablePath;
+      
+      if (process.platform === 'linux') {
+        // Common paths on Linux/Render
+        const possiblePaths = [
+          '/usr/bin/chromium-browser',
+          '/usr/bin/chromium',
+          '/opt/google/chrome/chrome',
+          '/usr/bin/google-chrome'
+        ];
         
-        if (ytInfo && ytInfo.link) {
-          videoInfo = {
-            title: ytInfo.title || `YouTube Video ${videoId}`,
-            thumbnails: [{ url: ytInfo.thumbnail || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 }],
-            formats: [{
-              itag: 'finder',
-              quality: ytInfo.quality || 'HD',
-              mimeType: 'video/mp4',
-              url: ytInfo.link,
-              hasAudio: true,
-              hasVideo: true,
-              contentLength: 0,
-              container: 'mp4'
-            }],
-            platform: 'youtube',
-            mediaType: 'video',
-            directUrl: `/api/direct?url=${encodeURIComponent(ytInfo.link)}`
-          };
-        }
-      } catch (err) {
-        console.error('yt-finder-nextgen failed:', err.message);
-      }
-    }
-    
-    // Method 3: tube-dl-custom-action
-    if (!videoInfo) {
-      try {
-        console.log('Trying tube-dl-custom-action for YouTube...');
-        const ytDlResult = await ytDl(url);
-        
-        if (ytDlResult && ytDlResult.videoInfo && ytDlResult.videoInfo.formats) {
-          const formats = ytDlResult.videoInfo.formats
-            .filter(format => format.mimeType && format.url)
-            .map(format => {
-              return {
-                itag: format.itag || 'tube',
-                quality: format.qualityLabel || 'Unknown',
-                mimeType: format.mimeType,
-                url: format.url,
-                hasAudio: format.hasAudio !== false,
-                hasVideo: format.hasVideo !== false,
-                contentLength: format.contentLength || 0,
-                container: format.container || 'mp4'
-              };
-            });
-          
-          if (formats.length > 0) {
-            // Find a complete format with both audio and video
-            const bestFormat = formats.find(f => f.hasAudio && f.hasVideo) || formats[0];
-            
-            videoInfo = {
-              title: ytDlResult.videoInfo.title || `YouTube Video ${videoId}`,
-              thumbnails: ytDlResult.videoInfo.thumbnails || [{ url: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 }],
-              formats: formats,
-              platform: 'youtube',
-              mediaType: 'video',
-              directUrl: `/api/direct?url=${encodeURIComponent(bestFormat.url)}`
-            };
+        for (const path of possiblePaths) {
+          if (fs.existsSync(path)) {
+            executablePath = path;
+            break;
           }
         }
-      } catch (err) {
-        console.error('tube-dl-custom-action failed:', err.message);
+      } else if (process.platform === 'win32') {
+        executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+      } else if (process.platform === 'darwin') {
+        executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
       }
-    }
-    
-    // Method 4: btch-downloader
-    if (!videoInfo) {
+      
+      const browser = await puppeteer.launch({
+        headless: 'new',
+        executablePath: executablePath,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu'
+        ]
+      });
+      
       try {
-        console.log('Trying btch-downloader for YouTube...');
-        const btchResult = await btchDownload('youtube', url);
+        const page = await browser.newPage();
         
-        if (btchResult && btchResult.status === 'success' && btchResult.result) {
-          const data = btchResult.result;
-          
-          if (data.url || data.video) {
-            const videoUrl = data.url || data.video;
-            
-            videoInfo = {
-              title: data.title || `YouTube Video ${videoId}`,
-              thumbnails: [{ url: data.thumbnail || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 }],
-              formats: [{
-                itag: 'btch',
-                quality: data.quality || 'HD',
-                mimeType: 'video/mp4',
-                url: videoUrl,
-                hasAudio: true,
-                hasVideo: true,
-                contentLength: 0,
-                container: 'mp4'
-              }],
-              platform: 'youtube',
-              mediaType: 'video',
-              directUrl: `/api/direct?url=${encodeURIComponent(videoUrl)}`
-            };
-          }
-        }
-      } catch (err) {
-        console.error('btch-downloader failed:', err.message);
-      }
-    }
-    
-    // Method 5: Try puppeteer for browser-based extraction
-    if (!videoInfo) {
-      try {
-        console.log('Trying puppeteer for YouTube...');
+        // Set user agent to mobile (works better for bypassing restrictions)
+        await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1');
         
-        const browser = await puppeteer.launch({
-          headless: 'new',
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu'
-          ]
-        });
+        // Navigate to YouTube embed page (often works better than direct URL)
+        await page.goto(`https://www.youtube.com/embed/${videoId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        try {
-          const page = await browser.newPage();
+        // Extract video information
+        const videoData = await page.evaluate(() => {
+          // Try to find player response in the page source
+          const scriptElements = document.querySelectorAll('script');
+          let playerResponse = null;
           
-          // Set user agent
-          await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1');
-          
-          // Navigate to YouTube embed page (often works better than direct URL)
-          await page.goto(`https://www.youtube.com/embed/${videoId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          
-          // Extract video information
-          const videoData = await page.evaluate(() => {
-            // Try to find player response in the page source
-            const scriptElements = document.querySelectorAll('script');
-            let playerResponse = null;
-            
-            for (const script of scriptElements) {
-              const text = script.textContent;
-              if (text && text.includes('var ytInitialPlayerResponse')) {
-                const match = text.match(/var\s+ytInitialPlayerResponse\s*=\s*({.*?});/s);
-                if (match && match[1]) {
-                  try {
-                    playerResponse = JSON.parse(match[1]);
-                    break;
-                  } catch (e) {
-                    // Continue to next script
-                  }
+          for (const script of scriptElements) {
+            const text = script.textContent;
+            if (text && text.includes('var ytInitialPlayerResponse')) {
+              const match = text.match(/var\s+ytInitialPlayerResponse\s*=\s*({.*?});/s);
+              if (match && match[1]) {
+                try {
+                  playerResponse = JSON.parse(match[1]);
+                  break;
+                } catch (e) {
+                  // Continue to next script
                 }
               }
             }
-            
-            if (!playerResponse) return null;
-            
-            // Extract video details
-            const videoDetails = playerResponse.videoDetails;
-            const streamingData = playerResponse.streamingData;
-            
-            if (!videoDetails || !streamingData) return null;
-            
-            // Get available formats
-            const formats = [];
-            
-            if (streamingData.formats) {
-              streamingData.formats.forEach(format => {
-                formats.push({
-                  itag: format.itag,
-                  quality: format.qualityLabel,
-                  mimeType: format.mimeType,
-                  url: format.url,
-                  hasAudio: true,
-                  hasVideo: true
-                });
-              });
-            }
-            
-            return {
-              title: videoDetails.title,
-              author: videoDetails.author,
-              thumbnails: videoDetails.thumbnail?.thumbnails,
-              formats: formats
-            };
-          });
-          
-          if (videoData && videoData.formats && videoData.formats.length > 0) {
-            // Find a complete format with both audio and video
-            const bestFormat = videoData.formats[0];
-            
-            videoInfo = {
-              title: videoData.title || `YouTube Video ${videoId}`,
-              thumbnails: videoData.thumbnails || [{ url: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 }],
-              formats: videoData.formats.map(format => {
-                return {
-                  itag: format.itag || 'pup',
-                  quality: format.quality || 'Unknown',
-                  mimeType: format.mimeType || 'video/mp4',
-                  url: format.url,
-                  hasAudio: format.hasAudio !== false,
-                  hasVideo: format.hasVideo !== false,
-                  contentLength: 0,
-                  container: 'mp4'
-                };
-              }),
-              platform: 'youtube',
-              mediaType: 'video',
-              uploader: videoData.author,
-              directUrl: `/api/direct?url=${encodeURIComponent(bestFormat.url)}`
-            };
           }
-        } finally {
-          await browser.close();
+          
+          if (!playerResponse) return null;
+          
+          // Extract video details
+          const videoDetails = playerResponse.videoDetails;
+          const streamingData = playerResponse.streamingData;
+          
+          if (!videoDetails || !streamingData) return null;
+          
+          // Get available formats
+          const formats = [];
+          
+          if (streamingData.formats) {
+            streamingData.formats.forEach(format => {
+              formats.push({
+                itag: format.itag,
+                quality: format.qualityLabel,
+                mimeType: format.mimeType,
+                url: format.url,
+                hasAudio: true,
+                hasVideo: true
+              });
+            });
+          }
+          
+          if (streamingData.adaptiveFormats) {
+            streamingData.adaptiveFormats.forEach(format => {
+              const isVideo = format.mimeType.includes('video/');
+              const isAudio = format.mimeType.includes('audio/');
+              
+              formats.push({
+                itag: format.itag,
+                quality: format.qualityLabel || (isAudio ? 'Audio' : format.quality),
+                mimeType: format.mimeType,
+                url: format.url,
+                hasAudio: isAudio,
+                hasVideo: isVideo
+              });
+            });
+          }
+          
+          // Extract thumbnails
+          const thumbnails = [];
+          if (videoDetails.thumbnail && videoDetails.thumbnail.thumbnails) {
+            videoDetails.thumbnail.thumbnails.forEach(thumb => {
+              thumbnails.push({
+                url: thumb.url,
+                width: thumb.width,
+                height: thumb.height
+              });
+            });
+          }
+          
+          return {
+            title: videoDetails.title,
+            description: videoDetails.shortDescription,
+            author: videoDetails.author,
+            thumbnails: thumbnails,
+            formats: formats
+          };
+        });
+        
+        if (videoData && videoData.formats && videoData.formats.length > 0) {
+          // Find a complete format with both audio and video
+          const bestFormat = videoData.formats.find(format => format.hasAudio && format.hasVideo) || videoData.formats[0];
+          
+          const result = {
+            title: videoData.title || `YouTube Video ${videoId}`,
+            thumbnails: videoData.thumbnails || [{ url: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 }],
+            formats: videoData.formats.map(format => {
+              return {
+                itag: format.itag || 'auto',
+                quality: format.quality || 'Unknown',
+                mimeType: format.mimeType || 'video/mp4',
+                url: format.url,
+                hasAudio: format.hasAudio !== false,
+                hasVideo: format.hasVideo !== false,
+                contentLength: 0,
+                container: format.mimeType && format.mimeType.includes('mp4') ? 'mp4' : 'webm'
+              };
+            }),
+            platform: 'youtube',
+            mediaType: 'video',
+            uploader: videoData.author,
+            description: videoData.description,
+            directUrl: `/api/direct?url=${encodeURIComponent(bestFormat.url)}`
+          };
+          
+          // Cache the result
+          mediaCache.set(cacheKey, result);
+          
+          return res.json(result);
         }
-      } catch (puppeteerErr) {
-        console.error('Puppeteer approach failed:', puppeteerErr.message);
+      } finally {
+        await browser.close();
       }
+    } catch (puppeteerErr) {
+      console.error('Puppeteer approach failed:', puppeteerErr);
     }
-
-    // If all methods fail, create a basic response with metadata but no download URL
-    if (!videoInfo) {
-      videoInfo = {
+    
+    // Fallback to standard API (for metadata)
+    try {
+      console.log('Trying API approach for YouTube...');
+      
+      // Create a basic response with metadata but no download URL
+      const result = {
         title: `YouTube Video ${videoId}`,
         thumbnails: [
           { url: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 },
@@ -1061,15 +951,17 @@ app.get('/api/youtube', async (req, res) => {
         }],
         platform: 'youtube',
         mediaType: 'video',
-        error: 'Unable to extract direct download URL. Video might be rate-limited or geo-restricted.'
+        note: 'This video requires direct viewing on YouTube. Click the link to view it there.'
       };
+      
+      // Cache the result
+      mediaCache.set(cacheKey, result);
+      
+      return res.json(result);
+    } catch (error) {
+      console.error('API approach failed:', error);
+      throw error;
     }
-
-    // Cache the result
-    mediaCache.put(cacheKey, videoInfo);
-
-    // Return the video info
-    res.json(videoInfo);
 
   } catch (error) {
     console.error('YouTube error:', error);
@@ -1087,7 +979,7 @@ app.get('/api/facebook', async (req, res) => {
     }
 
     // Check cache first
-    const cacheKey = `facebook:${url}`;
+    const cacheKey = createCacheKey(`facebook:${url}`);
     const cachedData = mediaCache.get(cacheKey);
     if (cachedData) {
       console.log(`Serving Facebook data from cache for ${url}`);
@@ -1096,287 +988,293 @@ app.get('/api/facebook', async (req, res) => {
 
     console.log(`Processing Facebook URL: ${url}`);
     
-    // Multi-library approach
-    let result = null;
-    
-    // Method 1: @mrnima/facebook-downloader
-    try {
-      console.log('Trying @mrnima/facebook-downloader...');
-      const fbData = await facebook(url);
-      
-      if (fbData && fbData.url) {
-        result = {
-          title: fbData.title || 'Facebook Video',
-          thumbnails: fbData.thumbnail ? [{ url: fbData.thumbnail, width: 480, height: 360 }] : [],
-          formats: [{
-            itag: 'fb_nima',
-            quality: 'HD',
-            mimeType: 'video/mp4',
-            url: fbData.url,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          }],
-          platform: 'facebook',
-          mediaType: 'video',
-          directUrl: `/api/direct?url=${encodeURIComponent(fbData.url)}`
-        };
-      }
-    } catch (err) {
-      console.error('@mrnima/facebook-downloader failed:', err.message);
+    // Create mobile URL version (often works better for extraction)
+    let mobileUrl = url;
+    if (!url.includes('m.facebook.com') && url.includes('facebook.com')) {
+      mobileUrl = url.replace('www.facebook.com', 'm.facebook.com')
+                    .replace('facebook.com', 'm.facebook.com');
     }
     
-    // Method 2: @xaviabot/fb-downloader
-    if (!result) {
-      try {
-        console.log('Trying @xaviabot/fb-downloader...');
-        const xaviaResult = await fbDownloader(url);
+    // Try puppeteer for browser-based extraction
+    try {
+      console.log('Using puppeteer for Facebook...');
+      
+      // Use puppeteer-core with different executable paths for different environments
+      let executablePath;
+      
+      if (process.platform === 'linux') {
+        // Common paths on Linux/Render
+        const possiblePaths = [
+          '/usr/bin/chromium-browser',
+          '/usr/bin/chromium',
+          '/opt/google/chrome/chrome',
+          '/usr/bin/google-chrome'
+        ];
         
-        if (xaviaResult && xaviaResult.hd) {
-          result = {
-            title: xaviaResult.title || 'Facebook Video',
-            thumbnails: xaviaResult.thumbnail ? [{ url: xaviaResult.thumbnail, width: 480, height: 360 }] : [],
-            formats: [
-              {
-                itag: 'fb_xavia_hd',
-                quality: 'HD',
-                mimeType: 'video/mp4',
-                url: xaviaResult.hd,
-                hasAudio: true,
-                hasVideo: true,
-                contentLength: 0,
-                container: 'mp4'
+        for (const path of possiblePaths) {
+          if (fs.existsSync(path)) {
+            executablePath = path;
+            break;
+          }
+        }
+      } else if (process.platform === 'win32') {
+        executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+      } else if (process.platform === 'darwin') {
+        executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+      }
+      
+      const browser = await puppeteer.launch({
+        headless: 'new',
+        executablePath: executablePath,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu'
+        ]
+      });
+      
+      try {
+        const page = await browser.newPage();
+        
+        // Set user agent to mobile (works better for Facebook)
+        await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1');
+        
+        // Navigate to Facebook page
+        await page.goto(mobileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        
+        // Extract video information
+        const videoData = await page.evaluate(() => {
+          // Try to find video source
+          const videoElem = document.querySelector('video');
+          if (videoElem && videoElem.src) {
+            return {
+              url: videoElem.src,
+              thumbnail: document.querySelector('meta[property="og:image"]')?.getAttribute('content')
+            };
+          }
+          
+          // Look for meta tags
+          const ogVideo = document.querySelector('meta[property="og:video"]')?.getAttribute('content');
+          const ogVideoUrl = document.querySelector('meta[property="og:video:url"]')?.getAttribute('content');
+          const ogVideoSecureUrl = document.querySelector('meta[property="og:video:secure_url"]')?.getAttribute('content');
+          
+          const videoUrl = ogVideoSecureUrl || ogVideoUrl || ogVideo;
+          if (videoUrl) {
+            return {
+              url: videoUrl,
+              thumbnail: document.querySelector('meta[property="og:image"]')?.getAttribute('content')
+            };
+          }
+          
+          // Look for video URLs in script tags
+          const scripts = document.querySelectorAll('script');
+          for (const script of scripts) {
+            const content = script.textContent;
+            if (content && (content.includes('playable_url') || content.includes('video_url'))) {
+              const playableUrlMatch = content.match(/"playable_url":"([^"]+)"/);
+              if (playableUrlMatch && playableUrlMatch[1]) {
+                return {
+                  url: playableUrlMatch[1].replace(/\\/g, ''),
+                  thumbnail: document.querySelector('meta[property="og:image"]')?.getAttribute('content')
+                };
               }
-            ],
+              
+              const hdUrlMatch = content.match(/"playable_url_quality_hd":"([^"]+)"/);
+              if (hdUrlMatch && hdUrlMatch[1]) {
+                return {
+                  url: hdUrlMatch[1].replace(/\\/g, ''),
+                  thumbnail: document.querySelector('meta[property="og:image"]')?.getAttribute('content'),
+                  quality: 'HD'
+                };
+              }
+              
+              const videoUrlMatch = content.match(/"video_url":"([^"]+)"/);
+              if (videoUrlMatch && videoUrlMatch[1]) {
+                return {
+                  url: videoUrlMatch[1].replace(/\\/g, ''),
+                  thumbnail: document.querySelector('meta[property="og:image"]')?.getAttribute('content')
+                };
+              }
+            }
+          }
+          
+          return null;
+        });
+        
+        // Get title
+        const title = await page.evaluate(() => {
+          return document.querySelector('meta[property="og:title"]')?.getAttribute('content') || 
+                 document.querySelector('title')?.innerText || 
+                 'Facebook Video';
+        });
+        
+        if (videoData && videoData.url) {
+          const result = {
+            title: title,
+            thumbnails: videoData.thumbnail ? [{ url: videoData.thumbnail, width: 480, height: 360 }] : [],
+            formats: [{
+              itag: videoData.quality === 'HD' ? 'fb_hd' : 'fb_sd',
+              quality: videoData.quality || 'Standard',
+              mimeType: 'video/mp4',
+              url: videoData.url,
+              hasAudio: true,
+              hasVideo: true,
+              contentLength: 0,
+              container: 'mp4'
+            }],
             platform: 'facebook',
             mediaType: 'video',
-            directUrl: `/api/direct?url=${encodeURIComponent(xaviaResult.hd)}`
+            directUrl: `/api/direct?url=${encodeURIComponent(videoData.url)}`
           };
           
-          // Add SD version if available
-          if (xaviaResult.sd) {
+          // Cache the result
+          mediaCache.set(cacheKey, result);
+          
+          return res.json(result);
+        }
+      } finally {
+        await browser.close();
+      }
+    } catch (puppeteerErr) {
+      console.error('Puppeteer approach failed:', puppeteerErr);
+    }
+    
+    // Try direct approach
+    try {
+      console.log('Trying direct approach for Facebook...');
+      
+      const response = await axios.get(mobileUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5'
+        }
+      });
+      
+      if (response.status === 200 && response.data) {
+        const html = response.data;
+        const $ = cheerio.load(html);
+        
+        // Look for video in meta tags
+        const ogVideoUrl = $('meta[property="og:video"]').attr('content');
+        const ogVideoSecureUrl = $('meta[property="og:video:secure_url"]').attr('content');
+        const videoUrl = ogVideoSecureUrl || ogVideoUrl;
+        
+        // Get thumbnail
+        const ogImageUrl = $('meta[property="og:image"]').attr('content');
+        
+        // Get title
+        const ogTitle = $('meta[property="og:title"]').attr('content');
+        const title = ogTitle || $('title').text() || 'Facebook Video';
+        
+        if (videoUrl) {
+          const result = {
+            title: title,
+            thumbnails: ogImageUrl ? [{ url: ogImageUrl, width: 480, height: 360 }] : [],
+            formats: [{
+              itag: 'fb_og',
+              quality: 'Original',
+              mimeType: 'video/mp4',
+              url: videoUrl,
+              hasAudio: true,
+              hasVideo: true,
+              contentLength: 0,
+              container: 'mp4'
+            }],
+            platform: 'facebook',
+            mediaType: 'video',
+            directUrl: `/api/direct?url=${encodeURIComponent(videoUrl)}`
+          };
+          
+          // Cache the result
+          mediaCache.set(cacheKey, result);
+          
+          return res.json(result);
+        }
+        
+        // Look for playable_url in script tags
+        const hdUrlMatch = html.match(/"playable_url_quality_hd":"([^"]+)"/);
+        const sdUrlMatch = html.match(/"playable_url":"([^"]+)"/);
+        
+        if (hdUrlMatch && hdUrlMatch[1]) {
+          const hdUrl = hdUrlMatch[1].replace(/\\/g, '');
+          
+          const result = {
+            title: title,
+            thumbnails: ogImageUrl ? [{ url: ogImageUrl, width: 480, height: 360 }] : [],
+            formats: [{
+              itag: 'fb_hd_direct',
+              quality: 'HD',
+              mimeType: 'video/mp4',
+              url: hdUrl,
+              hasAudio: true,
+              hasVideo: true,
+              contentLength: 0,
+              container: 'mp4'
+            }],
+            platform: 'facebook',
+            mediaType: 'video',
+            directUrl: `/api/direct?url=${encodeURIComponent(hdUrl)}`
+          };
+          
+          // Add SD format if available
+          if (sdUrlMatch && sdUrlMatch[1]) {
+            const sdUrl = sdUrlMatch[1].replace(/\\/g, '');
+            
             result.formats.push({
-              itag: 'fb_xavia_sd',
+              itag: 'fb_sd_direct',
               quality: 'SD',
               mimeType: 'video/mp4',
-              url: xaviaResult.sd,
+              url: sdUrl,
               hasAudio: true,
               hasVideo: true,
               contentLength: 0,
               container: 'mp4'
             });
           }
-        }
-      } catch (err) {
-        console.error('@xaviabot/fb-downloader failed:', err.message);
-      }
-    }
-    
-    // Method 3: SnapSave approach
-    if (!result) {
-      try {
-        console.log('Trying SnapSave for Facebook...');
-        const snapSaveResult = await snapsaveDownload(url);
-        
-        if (snapSaveResult && snapSaveResult.length > 0) {
-          const formats = snapSaveResult.map((item, index) => {
-            return {
-              itag: `fb_snap_${index}`,
-              quality: item.quality || 'Unknown',
+          
+          // Cache the result
+          mediaCache.set(cacheKey, result);
+          
+          return res.json(result);
+        } else if (sdUrlMatch && sdUrlMatch[1]) {
+          const sdUrl = sdUrlMatch[1].replace(/\\/g, '');
+          
+          const result = {
+            title: title,
+            thumbnails: ogImageUrl ? [{ url: ogImageUrl, width: 480, height: 360 }] : [],
+            formats: [{
+              itag: 'fb_sd_direct',
+              quality: 'SD',
               mimeType: 'video/mp4',
-              url: item.url,
+              url: sdUrl,
               hasAudio: true,
               hasVideo: true,
               contentLength: 0,
               container: 'mp4'
-            };
-          });
-          
-          const bestFormat = formats[0];
-          
-          result = {
-            title: 'Facebook Video',
-            thumbnails: [],
-            formats: formats,
+            }],
             platform: 'facebook',
             mediaType: 'video',
-            directUrl: `/api/direct?url=${encodeURIComponent(bestFormat.url)}`
+            directUrl: `/api/direct?url=${encodeURIComponent(sdUrl)}`
           };
+          
+          // Cache the result
+          mediaCache.set(cacheKey, result);
+          
+          return res.json(result);
         }
-      } catch (err) {
-        console.error('SnapSave approach failed:', err.message);
       }
-    }
-    
-    // Method 4: btch-downloader
-    if (!result) {
-      try {
-        console.log('Trying btch-downloader for Facebook...');
-        const btchResult = await btchDownload('facebook', url);
-        
-        if (btchResult && btchResult.status === 'success' && btchResult.result) {
-          const data = btchResult.result;
-          const videoUrl = data.hd || data.sd || data.url || data.video;
-          
-          if (videoUrl) {
-            const formats = [];
-            
-            if (data.hd) {
-              formats.push({
-                itag: 'fb_btch_hd',
-                quality: 'HD',
-                mimeType: 'video/mp4',
-                url: data.hd,
-                hasAudio: true,
-                hasVideo: true,
-                contentLength: 0,
-                container: 'mp4'
-              });
-            }
-            
-            if (data.sd) {
-              formats.push({
-                itag: 'fb_btch_sd',
-                quality: 'SD',
-                mimeType: 'video/mp4',
-                url: data.sd,
-                hasAudio: true,
-                hasVideo: true,
-                contentLength: 0,
-                container: 'mp4'
-              });
-            }
-            
-            // If no specific quality, add the main URL
-            if (formats.length === 0) {
-              formats.push({
-                itag: 'fb_btch',
-                quality: 'Standard',
-                mimeType: 'video/mp4',
-                url: videoUrl,
-                hasAudio: true,
-                hasVideo: true,
-                contentLength: 0,
-                container: 'mp4'
-              });
-            }
-            
-            result = {
-              title: data.title || 'Facebook Video',
-              thumbnails: data.thumbnail ? [{ url: data.thumbnail, width: 480, height: 360 }] : [],
-              formats: formats,
-              platform: 'facebook',
-              mediaType: 'video',
-              directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
-            };
-          }
-        }
-      } catch (err) {
-        console.error('btch-downloader failed:', err.message);
-      }
-    }
-    
-    // Method 5: Try puppeteer for browser-based extraction
-    if (!result) {
-      try {
-        console.log('Trying puppeteer for Facebook...');
-        
-        const browser = await puppeteer.launch({
-          headless: 'new',
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu'
-          ]
-        });
-        
-        try {
-          const page = await browser.newPage();
-          
-          // Set user agent to mobile (works better for Facebook)
-          await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1');
-          
-          // Navigate to Facebook page
-          const mobileUrl = url.replace('www.facebook.com', 'm.facebook.com');
-          await page.goto(mobileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          
-          // Extract video information
-          const videoData = await page.evaluate(() => {
-            // Look for video
-            const videoElem = document.querySelector('video');
-            if (videoElem && videoElem.src) {
-              return {
-                url: videoElem.src,
-                thumbnail: document.querySelector('meta[property="og:image"]')?.getAttribute('content')
-              };
-            }
-            
-            // Look for meta tags
-            const ogVideo = document.querySelector('meta[property="og:video"]')?.getAttribute('content');
-            const ogVideoUrl = document.querySelector('meta[property="og:video:url"]')?.getAttribute('content');
-            const ogVideoSecureUrl = document.querySelector('meta[property="og:video:secure_url"]')?.getAttribute('content');
-            
-            const videoUrl = ogVideoSecureUrl || ogVideoUrl || ogVideo;
-            if (videoUrl) {
-              return {
-                url: videoUrl,
-                thumbnail: document.querySelector('meta[property="og:image"]')?.getAttribute('content')
-              };
-            }
-            
-            return null;
-          });
-          
-          // Get title
-          const title = await page.evaluate(() => {
-            return document.querySelector('meta[property="og:title"]')?.getAttribute('content') || 
-                   document.querySelector('title')?.innerText || 
-                   'Facebook Video';
-          });
-          
-          if (videoData && videoData.url) {
-            result = {
-              title: title,
-              thumbnails: videoData.thumbnail ? [{ url: videoData.thumbnail, width: 480, height: 360 }] : [],
-              formats: [{
-                itag: 'fb_pup',
-                quality: 'Browser Extract',
-                mimeType: 'video/mp4',
-                url: videoData.url,
-                hasAudio: true,
-                hasVideo: true,
-                contentLength: 0,
-                container: 'mp4'
-              }],
-              platform: 'facebook',
-              mediaType: 'video',
-              directUrl: `/api/direct?url=${encodeURIComponent(videoData.url)}`
-            };
-          }
-        } finally {
-          await browser.close();
-        }
-      } catch (puppeteerErr) {
-        console.error('Puppeteer approach failed:', puppeteerErr.message);
-      }
+    } catch (directErr) {
+      console.error('Direct approach failed:', directErr);
     }
     
     // If all methods fail, return error
-    if (!result) {
-      return res.status(404).json({
-        error: 'No videos found on this Facebook page',
-        details: 'All extraction methods failed. This might be a private video or require login.'
-      });
-    }
-    
-    // Cache the result
-    mediaCache.put(cacheKey, result);
-    
-    // Return the video info
-    res.json(result);
+    return res.status(404).json({
+      error: 'No videos found on this Facebook page',
+      details: 'All extraction methods failed. This might be a private video or require login.'
+    });
 
   } catch (error) {
     console.error('Facebook error:', error);
@@ -1401,9 +1299,8 @@ app.get('/api/info', async (req, res) => {
     switch (platform) {
       case 'youtube':
         try {
-          const ytResponse = await fetch(`http://localhost:${PORT}/api/youtube?url=${encodeURIComponent(url)}`);
-          const ytData = await ytResponse.json();
-          return res.json(ytData);
+          const ytResponse = await axios.get(`http://localhost:${PORT}/api/youtube?url=${encodeURIComponent(url)}`);
+          return res.json(ytResponse.data);
         } catch (error) {
           console.error('Error forwarding to YouTube API:', error);
           break;
@@ -1411,9 +1308,8 @@ app.get('/api/info', async (req, res) => {
         
       case 'facebook':
         try {
-          const fbResponse = await fetch(`http://localhost:${PORT}/api/facebook?url=${encodeURIComponent(url)}`);
-          const fbData = await fbResponse.json();
-          return res.json(fbData);
+          const fbResponse = await axios.get(`http://localhost:${PORT}/api/facebook?url=${encodeURIComponent(url)}`);
+          return res.json(fbResponse.data);
         } catch (error) {
           console.error('Error forwarding to Facebook API:', error);
           break;
@@ -1421,9 +1317,8 @@ app.get('/api/info', async (req, res) => {
         
       case 'tiktok':
         try {
-          const ttResponse = await fetch(`http://localhost:${PORT}/api/tiktok?url=${encodeURIComponent(url)}`);
-          const ttData = await ttResponse.json();
-          return res.json(ttData);
+          const ttResponse = await axios.get(`http://localhost:${PORT}/api/tiktok?url=${encodeURIComponent(url)}`);
+          return res.json(ttResponse.data);
         } catch (error) {
           console.error('Error forwarding to TikTok API:', error);
           break;
@@ -1431,106 +1326,130 @@ app.get('/api/info', async (req, res) => {
         
       case 'pinterest':
         try {
-          const pinResponse = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
-          const pinData = await pinResponse.json();
-          return res.json(pinData);
+          const pinResponse = await axios.get(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
+          return res.json(pinResponse.data);
         } catch (error) {
           console.error('Error forwarding to Pinterest API:', error);
           break;
         }
-        
-      case 'twitter':
-        try {
-          // Try X Scrapper
-          const twitterData = await xScrapper(url);
-          if (twitterData && twitterData.videos && twitterData.videos.length > 0) {
-            const formats = twitterData.videos.map((video, index) => {
-              return {
-                itag: `tw_${index}`,
-                quality: video.quality || 'Unknown',
-                mimeType: 'video/mp4',
-                url: video.url,
-                hasAudio: true,
-                hasVideo: true,
-                contentLength: 0,
-                container: 'mp4'
-              };
-            });
-            
-            const result = {
-              title: twitterData.text || 'Twitter Post',
-              thumbnails: twitterData.image ? [{ url: twitterData.image, width: 480, height: 480 }] : [],
-              formats: formats,
-              platform: 'twitter',
-              mediaType: 'video',
-              directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
-            };
-            
-            return res.json(result);
-          } else if (twitterData && twitterData.image) {
-            // If no video but has image
-            const result = {
-              title: twitterData.text || 'Twitter Post',
-              thumbnails: [{ url: twitterData.image, width: 480, height: 480 }],
-              formats: [{
-                itag: 'tw_img',
-                quality: 'Original',
-                mimeType: 'image/jpeg',
-                url: twitterData.image,
-                hasAudio: false,
-                hasVideo: false,
-                contentLength: 0,
-                container: 'jpeg'
-              }],
-              platform: 'twitter',
-              mediaType: 'image',
-              directUrl: `/api/direct?url=${encodeURIComponent(twitterData.image)}`
-            };
-            
-            return res.json(result);
-          }
-        } catch (error) {
-          console.error('Twitter API error:', error);
-          break;
-        }
     }
 
-    // Generic handling for other platforms or when specific endpoints fail
+    // Generic handling for other platforms
     try {
-      // Try btch-downloader
-      console.log('Trying btch-downloader for generic URL...');
-      const btchResult = await btchDownload('all', url);
+      // Try puppeteer for generic URL
+      console.log('Using puppeteer for generic URL...');
       
-      if (btchResult && btchResult.status === 'success' && btchResult.result) {
-        const data = btchResult.result;
-        const mediaUrl = data.url || data.video || data.audio;
+      // Use puppeteer-core with different executable paths for different environments
+      let executablePath;
+      
+      if (process.platform === 'linux') {
+        // Common paths on Linux/Render
+        const possiblePaths = [
+          '/usr/bin/chromium-browser',
+          '/usr/bin/chromium',
+          '/opt/google/chrome/chrome',
+          '/usr/bin/google-chrome'
+        ];
         
-        if (mediaUrl) {
-          const formats = [{
-            itag: 'generic',
-            quality: data.quality || 'Standard',
-            mimeType: mediaType === 'audio' ? 'audio/mp3' : 'video/mp4',
-            url: mediaUrl,
-            hasAudio: true,
-            hasVideo: mediaType === 'video',
-            contentLength: 0,
-            container: mediaType === 'audio' ? 'mp3' : 'mp4'
-          }];
-          
-          const result = {
-            title: data.title || `Media from ${platform}`,
-            thumbnails: data.thumbnail ? [{ url: data.thumbnail, width: 480, height: 360 }] : [],
-            formats: formats,
-            platform: platform,
-            mediaType: mediaType,
-            directUrl: `/api/direct?url=${encodeURIComponent(mediaUrl)}`
-          };
-          
-          return res.json(result);
+        for (const path of possiblePaths) {
+          if (fs.existsSync(path)) {
+            executablePath = path;
+            break;
+          }
         }
+      } else if (process.platform === 'win32') {
+        executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+      } else if (process.platform === 'darwin') {
+        executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
       }
-    } catch (btchError) {
-      console.error('btch-downloader generic approach failed:', btchError.message);
+      
+      const browser = await puppeteer.launch({
+        headless: 'new',
+        executablePath: executablePath,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu'
+        ]
+      });
+      
+      try {
+        const page = await browser.newPage();
+        
+        // Set user agent
+        await page.setUserAgent(getRandomUserAgent());
+        
+        // Navigate to URL
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        
+        // Extract metadata
+        const metaData = await page.evaluate(() => {
+          // Get title
+          const title = document.querySelector('meta[property="og:title"]')?.getAttribute('content') || 
+                       document.querySelector('title')?.innerText || 
+                       'Media Content';
+          
+          // Get description
+          const description = document.querySelector('meta[property="og:description"]')?.getAttribute('content') || 
+                             document.querySelector('meta[name="description"]')?.getAttribute('content');
+          
+          // Get thumbnail
+          const thumbnail = document.querySelector('meta[property="og:image"]')?.getAttribute('content') ||
+                           document.querySelector('meta[property="og:image:url"]')?.getAttribute('content');
+          
+          // Try to find video
+          const videoElem = document.querySelector('video');
+          const videoUrl = videoElem?.src || 
+                          document.querySelector('meta[property="og:video"]')?.getAttribute('content') ||
+                          document.querySelector('meta[property="og:video:url"]')?.getAttribute('content');
+          
+          // Try to find audio
+          const audioElem = document.querySelector('audio');
+          const audioUrl = audioElem?.src || 
+                          document.querySelector('meta[property="og:audio"]')?.getAttribute('content') ||
+                          document.querySelector('meta[property="og:audio:url"]')?.getAttribute('content');
+          
+          return {
+            title,
+            description,
+            thumbnail,
+            videoUrl,
+            audioUrl
+          };
+        });
+        
+        // Create a response based on what we found
+        const mediaUrl = metaData.videoUrl || metaData.audioUrl || url;
+        const isVideo = !!metaData.videoUrl;
+        const isAudio = !!metaData.audioUrl;
+        
+        const result = {
+          title: metaData.title || `Media from ${platform}`,
+          description: metaData.description,
+          thumbnails: metaData.thumbnail ? [{ url: metaData.thumbnail, width: 480, height: 360 }] : [],
+          formats: [{
+            itag: 'generic',
+            quality: 'Original',
+            mimeType: isVideo ? 'video/mp4' : (isAudio ? 'audio/mp3' : 'application/octet-stream'),
+            url: mediaUrl,
+            hasAudio: isAudio || isVideo,
+            hasVideo: isVideo,
+            contentLength: 0,
+            container: isVideo ? 'mp4' : (isAudio ? 'mp3' : null)
+          }],
+          platform: platform,
+          mediaType: mediaType,
+          directUrl: `/api/direct?url=${encodeURIComponent(mediaUrl)}`
+        };
+        
+        return res.json(result);
+      } finally {
+        await browser.close();
+      }
+    } catch (genericError) {
+      console.error('Generic approach failed:', genericError);
     }
 
     // Final fallback - just return basic info
@@ -1581,160 +1500,47 @@ app.get('/api/download', async (req, res) => {
     // Platform-specific download handling
     let downloadSuccess = false;
     
-    // For YouTube
-    if (platform === 'youtube') {
+    // For YouTube, Pinterest, TikTok, and Facebook, get info first
+    if (['youtube', 'pinterest', 'tiktok', 'facebook'].includes(platform)) {
       try {
         // Get info first to get the right format URL
-        const ytResponse = await fetch(`http://localhost:${PORT}/api/youtube?url=${encodeURIComponent(url)}`);
-        const ytData = await ytResponse.json();
+        const infoResponse = await axios.get(`http://localhost:${PORT}/api/${platform}?url=${encodeURIComponent(url)}`);
+        const info = infoResponse.data;
         
-        if (ytData.formats && ytData.formats.length > 0) {
+        if (info.formats && info.formats.length > 0) {
           // Find requested format or default to best
-          let targetFormat = ytData.formats[0];
+          let targetFormat = info.formats[0];
           if (itag) {
-            const requestedFormat = ytData.formats.find(f => f.itag === itag);
+            const requestedFormat = info.formats.find(f => f.itag === itag);
             if (requestedFormat) {
               targetFormat = requestedFormat;
             }
           }
           
           // Download the file
-          const videoResponse = await fetch(targetFormat.url, {
+          const mediaResponse = await axios({
+            method: 'get',
+            url: targetFormat.url,
+            responseType: 'stream',
             headers: {
               'User-Agent': getRandomUserAgent()
             }
           });
           
-          if (videoResponse.ok) {
+          if (mediaResponse.status === 200) {
             const fileStream = fs.createWriteStream(tempFilePath);
+            mediaResponse.data.pipe(fileStream);
+            
             await new Promise((resolve, reject) => {
-              videoResponse.body.pipe(fileStream);
-              videoResponse.body.on('error', reject);
               fileStream.on('finish', resolve);
+              fileStream.on('error', reject);
             });
             
             downloadSuccess = true;
           }
         }
-      } catch (ytError) {
-        console.error('YouTube-specific download failed:', ytError.message);
-      }
-    }
-    // For TikTok
-    else if (platform === 'tiktok') {
-      try {
-        // Get info first to get the right format URL
-        const ttResponse = await fetch(`http://localhost:${PORT}/api/tiktok?url=${encodeURIComponent(url)}`);
-        const ttData = await ttResponse.json();
-        
-        if (ttData.formats && ttData.formats.length > 0) {
-          // Find requested format or default to best
-          let targetFormat = ttData.formats[0];
-          if (itag) {
-            const requestedFormat = ttData.formats.find(f => f.itag === itag);
-            if (requestedFormat) {
-              targetFormat = requestedFormat;
-            }
-          }
-          
-          // Download the file
-          const videoResponse = await fetch(targetFormat.url, {
-            headers: {
-              'User-Agent': getRandomUserAgent()
-            }
-          });
-          
-          if (videoResponse.ok) {
-            const fileStream = fs.createWriteStream(tempFilePath);
-            await new Promise((resolve, reject) => {
-              videoResponse.body.pipe(fileStream);
-              videoResponse.body.on('error', reject);
-              fileStream.on('finish', resolve);
-            });
-            
-            downloadSuccess = true;
-          }
-        }
-      } catch (ttError) {
-        console.error('TikTok-specific download failed:', ttError.message);
-      }
-    }
-    // For Pinterest
-    else if (platform === 'pinterest') {
-      try {
-        // Get info first to get the right format URL
-        const pinResponse = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
-        const pinData = await pinResponse.json();
-        
-        if (pinData.formats && pinData.formats.length > 0) {
-          // Find requested format or default to best
-          let targetFormat = pinData.formats[0];
-          if (itag) {
-            const requestedFormat = pinData.formats.find(f => f.itag === itag);
-            if (requestedFormat) {
-              targetFormat = requestedFormat;
-            }
-          }
-          
-          // Download the file
-          const mediaResponse = await fetch(targetFormat.url, {
-            headers: {
-              'User-Agent': getRandomUserAgent()
-            }
-          });
-          
-          if (mediaResponse.ok) {
-            const fileStream = fs.createWriteStream(tempFilePath);
-            await new Promise((resolve, reject) => {
-              mediaResponse.body.pipe(fileStream);
-              mediaResponse.body.on('error', reject);
-              fileStream.on('finish', resolve);
-            });
-            
-            downloadSuccess = true;
-          }
-        }
-      } catch (pinError) {
-        console.error('Pinterest-specific download failed:', pinError.message);
-      }
-    }
-    // For Facebook
-    else if (platform === 'facebook') {
-      try {
-        // Get info first to get the right format URL
-        const fbResponse = await fetch(`http://localhost:${PORT}/api/facebook?url=${encodeURIComponent(url)}`);
-        const fbData = await fbResponse.json();
-        
-        if (fbData.formats && fbData.formats.length > 0) {
-          // Find requested format or default to best
-          let targetFormat = fbData.formats[0];
-          if (itag) {
-            const requestedFormat = fbData.formats.find(f => f.itag === itag);
-            if (requestedFormat) {
-              targetFormat = requestedFormat;
-            }
-          }
-          
-          // Download the file
-          const videoResponse = await fetch(targetFormat.url, {
-            headers: {
-              'User-Agent': getRandomUserAgent()
-            }
-          });
-          
-          if (videoResponse.ok) {
-            const fileStream = fs.createWriteStream(tempFilePath);
-            await new Promise((resolve, reject) => {
-              videoResponse.body.pipe(fileStream);
-              videoResponse.body.on('error', reject);
-              fileStream.on('finish', resolve);
-            });
-            
-            downloadSuccess = true;
-          }
-        }
-      } catch (fbError) {
-        console.error('Facebook-specific download failed:', fbError.message);
+      } catch (error) {
+        console.error(`${platform}-specific download failed:`, error.message);
       }
     }
     
@@ -1743,29 +1549,124 @@ app.get('/api/download', async (req, res) => {
       try {
         console.log('Trying generic download approach...');
         
-        // Try direct fetch with different user agents
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            const response = await fetch(url, {
-              headers: {
-                'User-Agent': getRandomUserAgent(),
-                'Referer': new URL(url).origin
-              }
+        // Try direct axios download
+        try {
+          const response = await axios({
+            method: 'get',
+            url: url,
+            responseType: 'stream',
+            headers: {
+              'User-Agent': getRandomUserAgent(),
+              'Referer': new URL(url).origin
+            }
+          });
+          
+          if (response.status === 200) {
+            const fileStream = fs.createWriteStream(tempFilePath);
+            response.data.pipe(fileStream);
+            
+            await new Promise((resolve, reject) => {
+              fileStream.on('finish', resolve);
+              fileStream.on('error', reject);
             });
             
-            if (response.ok) {
-              const fileStream = fs.createWriteStream(tempFilePath);
-              await new Promise((resolve, reject) => {
-                response.body.pipe(fileStream);
-                response.body.on('error', reject);
-                fileStream.on('finish', resolve);
+            downloadSuccess = true;
+          }
+        } catch (axiosError) {
+          console.error('Direct axios download failed:', axiosError.message);
+          
+          // Try with puppeteer as a last resort
+          try {
+            console.log('Trying puppeteer for download...');
+            
+            // Use puppeteer-core with different executable paths for different environments
+            let executablePath;
+            
+            if (process.platform === 'linux') {
+              // Common paths on Linux/Render
+              const possiblePaths = [
+                '/usr/bin/chromium-browser',
+                '/usr/bin/chromium',
+                '/opt/google/chrome/chrome',
+                '/usr/bin/google-chrome'
+              ];
+              
+              for (const path of possiblePaths) {
+                if (fs.existsSync(path)) {
+                  executablePath = path;
+                  break;
+                }
+              }
+            } else if (process.platform === 'win32') {
+              executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+            } else if (process.platform === 'darwin') {
+              executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+            }
+            
+            const browser = await puppeteer.launch({
+              headless: 'new',
+              executablePath: executablePath,
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu'
+              ]
+            });
+            
+            try {
+              const page = await browser.newPage();
+              
+              // Set user agent
+              await page.setUserAgent(getRandomUserAgent());
+              
+              // Enable request interception
+              await page.setRequestInterception(true);
+              
+              // Only allow the main resource and media
+              page.on('request', (request) => {
+                const resourceType = request.resourceType();
+                if (resourceType === 'document' || resourceType === 'media') {
+                  request.continue();
+                } else {
+                  request.abort();
+                }
               });
               
-              downloadSuccess = true;
-              break;
+              // Create a buffer to collect the data
+              let contentBuffer = Buffer.from([]);
+              
+              // Listen for response
+              page.on('response', async (response) => {
+                const url = response.url();
+                const resourceType = response.request().resourceType();
+                
+                // Check if this is media content
+                if (resourceType === 'media' || 
+                    resourceType === 'document' && url === request.url) {
+                  try {
+                    const buffer = await response.buffer();
+                    contentBuffer = Buffer.concat([contentBuffer, buffer]);
+                  } catch (err) {
+                    console.error('Error buffering response:', err.message);
+                  }
+                }
+              });
+              
+              // Navigate to URL
+              await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+              
+              // If we have a buffer, write it to the file
+              if (contentBuffer.length > 0) {
+                fs.writeFileSync(tempFilePath, contentBuffer);
+                downloadSuccess = true;
+              }
+            } finally {
+              await browser.close();
             }
-          } catch (err) {
-            console.error(`Direct download attempt ${attempt + 1} failed:`, err.message);
+          } catch (puppeteerError) {
+            console.error('Puppeteer download approach failed:', puppeteerError.message);
           }
         }
       } catch (genericError) {
@@ -1838,29 +1739,25 @@ app.get('/api/direct', async (req, res) => {
     // Prepare headers with random user agent
     const userAgent = getRandomUserAgent();
 
-    const headers = {
-      'User-Agent': userAgent,
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Referer': new URL(url).origin,
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache',
-    };
-
-    // Try to determine content type first with HEAD request
+    // Try to get content info first
     let contentType = 'application/octet-stream';
     let contentLength = 0;
 
     try {
-      const headResponse = await fetch(url, {
+      const headResponse = await axios({
         method: 'HEAD',
-        headers,
-        redirect: 'follow'
+        url: url,
+        headers: {
+          'User-Agent': userAgent,
+          'Accept': '*/*',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Referer': new URL(url).origin
+        }
       });
 
-      if (headResponse.ok) {
-        contentType = headResponse.headers.get('content-type') || 'application/octet-stream';
-        contentLength = headResponse.headers.get('content-length') || 0;
+      if (headResponse.status === 200) {
+        contentType = headResponse.headers['content-type'] || 'application/octet-stream';
+        contentLength = headResponse.headers['content-length'] || 0;
       }
     } catch (headError) {
       console.log('HEAD request failed, continuing anyway:', headError.message);
@@ -1892,30 +1789,40 @@ app.get('/api/direct', async (req, res) => {
       }
     }
 
-    // Try to fetch with retries and different user agents
-    let response = null;
+    // Try to fetch the content
     let retries = 0;
     const maxRetries = 3;
     
-    while (!response && retries < maxRetries) {
+    while (retries < maxRetries) {
       try {
-        response = await fetch(url, {
+        const response = await axios({
+          method: 'get',
+          url: url,
+          responseType: 'stream',
           headers: {
             'User-Agent': getRandomUserAgent(),
             'Accept': '*/*',
             'Accept-Language': 'en-US,en;q=0.5',
             'Referer': new URL(url).origin
-          },
-          redirect: 'follow'
+          }
         });
         
-        if (!response.ok) {
-          console.log(`Attempt ${retries + 1} failed with status: ${response.status}`);
-          response = null;
-          throw new Error(`Failed with status: ${response.status}`);
+        // Update content type if available from the actual response
+        contentType = response.headers['content-type'] || contentType;
+        
+        // Set response headers
+        res.setHeader('Content-Type', contentType);
+        if (contentLength > 0) {
+          res.setHeader('Content-Length', contentLength);
         }
+        res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
+        
+        // Pipe the response to the client
+        response.data.pipe(res);
+        
+        return; // Success, exit the function
       } catch (fetchError) {
-        console.error(`Fetch attempt ${retries + 1} failed:`, fetchError.message);
+        console.error(`Direct fetch attempt ${retries + 1} failed:`, fetchError.message);
         retries++;
         
         if (retries < maxRetries) {
@@ -1925,22 +1832,7 @@ app.get('/api/direct', async (req, res) => {
       }
     }
     
-    if (!response) {
-      throw new Error(`Failed to fetch content after ${maxRetries} attempts`);
-    }
-
-    // Update content type if it's available from the actual response
-    contentType = response.headers.get('content-type') || contentType;
-
-    // Set response headers
-    res.setHeader('Content-Type', contentType);
-    if (contentLength > 0) {
-      res.setHeader('Content-Length', contentLength);
-    }
-    res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
-
-    // Pipe the response to the client
-    response.body.pipe(res);
+    throw new Error(`Failed to fetch content after ${maxRetries} attempts`);
 
   } catch (error) {
     console.error('Direct download error:', error);
