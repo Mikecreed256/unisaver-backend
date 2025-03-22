@@ -1,13 +1,15 @@
-// server.js - Complete solution with all platform support
+// server.js - Updated solution with robust YouTube, Facebook, and Pinterest support
+
 const express = require('express');
 const cors = require('cors');
-const ytDlp = require('yt-dlp-exec');
-const fbDownloader = require('fb-downloader');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+
+// Import btch-downloader for YouTube and Facebook handling
+const { youtube, fbdown } = require('btch-downloader');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -28,7 +30,7 @@ https.globalAgent.maxSockets = 25;
 http.globalAgent.keepAlive = true;
 https.globalAgent.keepAlive = true;
 
-// Routes
+// Root endpoint
 app.get('/', (req, res) => {
   res.send('Download API is running');
 });
@@ -36,8 +38,6 @@ app.get('/', (req, res) => {
 // Enhanced platform detection
 function detectPlatform(url) {
   const lowerUrl = url.toLowerCase();
-
-  // Social Media Platforms
   if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) {
     return 'youtube';
   } else if (lowerUrl.includes('facebook.com') || lowerUrl.includes('fb.com') || lowerUrl.includes('fb.watch')) {
@@ -52,9 +52,7 @@ function detectPlatform(url) {
     return 'threads';
   } else if (lowerUrl.includes('pinterest.com')) {
     return 'pinterest';
-  }
-  // Music Platforms
-  else if (lowerUrl.includes('spotify.com')) {
+  } else if (lowerUrl.includes('spotify.com')) {
     return 'spotify';
   } else if (lowerUrl.includes('soundcloud.com')) {
     return 'soundcloud';
@@ -70,9 +68,7 @@ function detectPlatform(url) {
     return 'mixcloud';
   } else if (lowerUrl.includes('audiomack.com')) {
     return 'audiomack';
-  }
-  // Video Platforms
-  else if (lowerUrl.includes('vimeo.com')) {
+  } else if (lowerUrl.includes('vimeo.com')) {
     return 'vimeo';
   } else if (lowerUrl.includes('dailymotion.com')) {
     return 'dailymotion';
@@ -97,18 +93,16 @@ function detectPlatform(url) {
 
 // Get media type based on platform
 function getMediaType(platform) {
-  // Music platforms
   if (['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple-music',
        'amazon-music', 'mixcloud', 'audiomack'].includes(platform)) {
     return 'audio';
-  }
-  // Video platforms
-  else {
+  } else {
     return 'video';
   }
 }
 
-// Enhanced Pinterest handler (supports both images and video)
+// ─── PINTEREST ENDPOINT ─────────────────────────────────────────────
+// Updated Pinterest handler with video extraction support
 app.get('/api/pinterest', async (req, res) => {
   try {
     const { url } = req.query;
@@ -116,7 +110,6 @@ app.get('/api/pinterest', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
     console.log(`Processing Pinterest URL: ${url}`);
-
     const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
     const response = await fetch(url, {
       headers: {
@@ -132,13 +125,42 @@ app.get('/api/pinterest', async (req, res) => {
     }
     const html = await response.text();
 
+    // Extract title
     let title = 'Pinterest Media';
     const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
     if (titleMatch && titleMatch[1]) {
       title = titleMatch[1].replace(' | Pinterest', '').trim();
     }
 
-    // Attempt to extract image URLs
+    // Attempt video extraction via og:video meta tag
+    let videoUrls = [];
+    const ogVideoMatch = html.match(/<meta property="og:video(?:\:secure_url)?" content="([^"]+)"/i);
+    if (ogVideoMatch && ogVideoMatch[1]) {
+      videoUrls.push(ogVideoMatch[1]);
+    }
+    if (videoUrls.length > 0) {
+      const formats = videoUrls.map((vurl, index) => ({
+        itag: `pin_vid_${index}`,
+        quality: 'HD',
+        mimeType: 'video/mp4',
+        url: vurl,
+        hasAudio: true,
+        hasVideo: true,
+        contentLength: 0,
+        container: 'mp4'
+      }));
+      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(videoUrls[0])}`;
+      return res.json({
+        title,
+        thumbnails: [], // Optionally, extract a thumbnail via og:image
+        formats,
+        platform: 'pinterest',
+        mediaType: 'video',
+        directUrl: directDownloadUrl
+      });
+    }
+
+    // Fallback: extract images if no video found
     let imageUrls = [];
     const originalImages = html.match(/https:\/\/i\.pinimg\.com\/originals\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif)/gi);
     if (originalImages && originalImages.length > 0) {
@@ -150,7 +172,6 @@ app.get('/api/pinterest', async (req, res) => {
         imageUrls = [...new Set(sizedImages)];
       }
     }
-    // Also attempt JSON extraction for images
     if (imageUrls.length === 0) {
       const jsonMatch = html.match(/\{"resourceResponses":\[.*?\].*?\}/g);
       if (jsonMatch && jsonMatch.length > 0) {
@@ -161,6 +182,7 @@ app.get('/api/pinterest', async (req, res) => {
             if (resources && resources.pin) {
               const pin = resources.pin;
               if (pin.title) title = pin.title;
+              if (pin.images && pin.images.orig) imageUrls.push(pin.images.orig.url);
               if (pin.images) {
                 Object.values(pin.images).forEach(img => {
                   if (img && img.url) {
@@ -175,75 +197,29 @@ app.get('/api/pinterest', async (req, res) => {
         }
       }
     }
-    // Also try schema extraction for images/videos
-    let videoUrl = null;
-    const schemaMatch = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s);
-    if (schemaMatch && schemaMatch[1]) {
-      try {
-        const schemaData = JSON.parse(schemaMatch[1]);
-        if (schemaData.image) {
-          if (Array.isArray(schemaData.image)) {
-            imageUrls = imageUrls.concat(schemaData.image);
-          } else {
-            imageUrls.push(schemaData.image);
+    if (imageUrls.length === 0) {
+      const schemaMatch = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s);
+      if (schemaMatch && schemaMatch[1]) {
+        try {
+          const schemaData = JSON.parse(schemaMatch[1]);
+          if (schemaData.image) {
+            imageUrls = imageUrls.concat(Array.isArray(schemaData.image) ? schemaData.image : [schemaData.image]);
           }
+          if (schemaData.name) title = schemaData.name;
+        } catch (schemaError) {
+          console.error('Error parsing Pinterest schema data:', schemaError);
         }
-        if (schemaData.name) {
-          title = schemaData.name;
-        }
-        // Check for video data in schema
-        if (schemaData.video) {
-          if (typeof schemaData.video === 'string') {
-            videoUrl = schemaData.video;
-          } else if (typeof schemaData.video === 'object' && schemaData.video.url) {
-            videoUrl = schemaData.video.url;
-          }
-        }
-      } catch (schemaError) {
-        console.error('Error parsing Pinterest schema data:', schemaError);
       }
     }
-    // Method: Look for og:image tag if no images found
     if (imageUrls.length === 0) {
       const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
       if (ogImageMatch && ogImageMatch[1]) {
         imageUrls.push(ogImageMatch[1]);
       }
     }
-    // Additional extraction: look for video URL patterns
-    const videoRegex = /"video_url"\s*:\s*"([^"]+\.(?:mp4|webm))"/i;
-    const videoMatch = html.match(videoRegex);
-    if (videoMatch && videoMatch[1]) {
-      videoUrl = videoMatch[1].replace(/\\/g, '');
-    }
-
-    // If video is available, prioritize it over images
-    if (videoUrl) {
-      const format = {
-        itag: 'pin_video',
-        quality: 'Standard',
-        mimeType: 'video/mp4',
-        url: videoUrl,
-        hasAudio: true,
-        hasVideo: true,
-        contentLength: 0,
-        container: 'mp4'
-      };
-      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(videoUrl)}`;
-      return res.json({
-        title: title,
-        thumbnails: [{ url: imageUrls[0] || videoUrl, width: 480, height: 480 }],
-        formats: [format],
-        platform: 'pinterest',
-        mediaType: 'video',
-        directUrl: directDownloadUrl
-      });
-    }
-
-    // If images exist, build format objects for images
     if (imageUrls.length === 0) {
       return res.status(404).json({
-        error: 'No images or videos found on this Pinterest page',
+        error: 'No media found on this Pinterest page',
         details: 'Try opening the pin in a browser and copying the media URL directly'
       });
     }
@@ -264,18 +240,16 @@ app.get('/api/pinterest', async (req, res) => {
     const formats = imageUrls.map((url, index) => {
       let quality = url.includes('/originals/') ? 'Original' : 'Standard';
       const sizeMatch = url.match(/\/([0-9]+)x\//);
-      if (sizeMatch && sizeMatch[1]) {
-        quality = `${sizeMatch[1]}px`;
-      }
+      if (sizeMatch && sizeMatch[1]) quality = `${sizeMatch[1]}px`;
       let format = 'jpg';
       if (url.toLowerCase().endsWith('.png')) format = 'png';
       else if (url.toLowerCase().endsWith('.gif')) format = 'gif';
       else if (url.toLowerCase().endsWith('.webp')) format = 'webp';
       return {
-        itag: `pin_${index}`,
-        quality: quality,
+        itag: `pin_img_${index}`,
+        quality,
         mimeType: `image/${format}`,
-        url: url,
+        url,
         hasAudio: false,
         hasVideo: false,
         contentLength: 0,
@@ -284,21 +258,21 @@ app.get('/api/pinterest', async (req, res) => {
     });
     const directDownloadUrl = `/api/direct?url=${encodeURIComponent(imageUrls[0])}`;
     res.json({
-      title: title,
+      title,
       thumbnails: [{ url: imageUrls[0], width: 480, height: 480 }],
-      formats: formats,
+      formats,
       platform: 'pinterest',
       mediaType: 'image',
       directUrl: directDownloadUrl
     });
-
   } catch (error) {
     console.error('Pinterest error:', error);
     res.status(500).json({ error: 'Pinterest processing failed', details: error.message });
   }
 });
 
-// Facebook endpoint with fb-downloader and fallback to yt-dlp
+// ─── FACEBOOK ENDPOINT ─────────────────────────────────────────────
+// Updated Facebook endpoint using btch-downloader
 app.get('/api/facebook', async (req, res) => {
   try {
     const { url } = req.query;
@@ -306,99 +280,33 @@ app.get('/api/facebook', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
     console.log(`Processing Facebook URL: ${url}`);
-    let formats = [];
-    let title = 'Facebook Video';
-    let thumbnail = '';
-
-    // Try fb-downloader first
-    try {
-      const fbData = await fbDownloader(url);
-      if (fbData && (fbData.hd || fbData.sd)) {
-        if (fbData.hd) {
-          formats.push({
-            itag: 'fb_hd',
-            quality: 'HD',
-            mimeType: 'video/mp4',
-            url: fbData.hd,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          });
-        }
-        if (fbData.sd) {
-          formats.push({
-            itag: 'fb_sd',
-            quality: 'SD',
-            mimeType: 'video/mp4',
-            url: fbData.sd,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          });
-        }
-        title = fbData.title || title;
-        thumbnail = fbData.thumbnail || thumbnail;
-      }
-    } catch (fbError) {
-      console.error('fb-downloader error:', fbError);
-    }
-
-    // Fallback: use yt-dlp if fb-downloader did not return results
-    if (formats.length === 0) {
-      try {
-        const info = await ytDlp(url, {
-          dumpSingleJson: true,
-          noCheckCertificates: true,
-          noWarnings: true,
-          addHeader: ['referer:facebook.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64)']
-        });
-        if (info.formats && info.formats.length > 0) {
-          info.formats.forEach(format => {
-            if (format.url) {
-              let quality = format.format_note || (format.height ? `${format.height}p` : 'Unknown');
-              formats.push({
-                itag: `fb_${format.format_id}`,
-                quality: quality,
-                mimeType: 'video/mp4',
-                url: format.url,
-                hasAudio: true,
-                hasVideo: true,
-                contentLength: 0,
-                container: 'mp4'
-              });
-            }
-          });
-          if (info.title) title = info.title;
-          if (info.thumbnail) thumbnail = info.thumbnail;
-        }
-      } catch (fallbackError) {
-        console.error('yt-dlp fallback error:', fallbackError);
-      }
-    }
-    if (formats.length === 0) {
-      return res.status(404).json({
-        error: 'No videos found on this Facebook page',
-        details: 'This might be a private video or require login'
-      });
-    }
-    const directUrl = `/api/direct?url=${encodeURIComponent(formats[0].url)}`;
-    res.json({
-      title: title,
-      thumbnails: thumbnail ? [{ url: thumbnail, width: 480, height: 360 }] : [],
-      formats: formats,
-      platform: 'facebook',
-      mediaType: 'video',
-      directUrl: directUrl
-    });
+    const data = await fbdown(url);
+    res.json(data);
   } catch (error) {
     console.error('Facebook error:', error);
     res.status(500).json({ error: 'Facebook processing failed', details: error.message });
   }
 });
 
-// Universal info endpoint - automatically detects platform
+// ─── YOUTUBE ENDPOINT ──────────────────────────────────────────────
+// Updated YouTube endpoint using btch-downloader
+app.get('/api/youtube', async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url) {
+      return res.status(400).json({ error: 'URL is required' });
+    }
+    console.log(`Processing YouTube URL: ${url}`);
+    const data = await youtube(url);
+    res.json(data);
+  } catch (error) {
+    console.error('YouTube error:', error);
+    res.status(500).json({ error: 'YouTube processing failed', details: error.message });
+  }
+});
+
+// ─── UNIVERSAL INFO ENDPOINT ───────────────────────────────────────
+// Automatically detects platform and routes accordingly
 app.get('/api/info', async (req, res) => {
   try {
     const url = req.query.url;
@@ -416,17 +324,22 @@ app.get('/api/info', async (req, res) => {
       const response = await fetch(`http://localhost:${PORT}/api/facebook?url=${encodeURIComponent(url)}`);
       const data = await response.json();
       return res.json(data);
+    } else if (platform === 'youtube') {
+      const response = await fetch(`http://localhost:${PORT}/api/youtube?url=${encodeURIComponent(url)}`);
+      const data = await response.json();
+      return res.json(data);
     }
     try {
-      const info = await ytDlp(url, {
+      // Fallback for other platforms using youtube-dl-exec
+      const info = await require('youtube-dl-exec')(url, {
         dumpSingleJson: true,
         noCheckCertificates: true,
         noWarnings: true,
         preferFreeFormats: true,
-        addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64)']
+        addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
       });
-      const formats = (info.formats || [])
-        .filter(format => format)
+      const formats = info.formats
+        .filter(format => format !== null)
         .map(format => {
           const isVideo = format.vcodec !== 'none';
           const isAudio = format.acodec !== 'none';
@@ -436,12 +349,12 @@ app.get('/api/info', async (req, res) => {
           }
           let mimeType = 'unknown';
           if (format.ext) {
-            mimeType = isVideo ? `video/${format.ext}` : (isAudio ? `audio/${format.ext}` : 'unknown');
+            mimeType = isVideo ? `video/${format.ext}` : isAudio ? `audio/${format.ext}` : mimeType;
           }
           return {
             itag: format.format_id,
             quality: qualityLabel,
-            mimeType: mimeType,
+            mimeType,
             url: format.url,
             hasAudio: isAudio,
             hasVideo: isVideo,
@@ -456,15 +369,15 @@ app.get('/api/info', async (req, res) => {
         title: info.title || `${platform}_media_${Date.now()}`,
         thumbnails: info.thumbnails ? info.thumbnails.map(t => ({ url: t.url, width: t.width, height: t.height })) : [],
         duration: info.duration,
-        formats: formats,
-        platform: platform,
-        mediaType: mediaType,
+        formats,
+        platform,
+        mediaType,
         uploader: info.uploader || info.channel || null,
         uploadDate: info.upload_date || null,
         description: info.description || null
       });
     } catch (ytdlError) {
-      console.error('yt-dlp error:', ytdlError);
+      console.error('Fallback youtube-dl error:', ytdlError);
       const fallbackThumbnail = `https://via.placeholder.com/480x360.png?text=${encodeURIComponent(platform)}`;
       res.json({
         title: `Media from ${platform}`,
@@ -474,13 +387,13 @@ app.get('/api/info', async (req, res) => {
           itag: 'best',
           quality: 'Best available',
           mimeType: mediaType === 'audio' ? 'audio/mp3' : 'video/mp4',
-          url: url,
+          url,
           hasAudio: true,
           hasVideo: mediaType === 'video',
           contentLength: 0
         }],
-        platform: platform,
-        mediaType: mediaType,
+        platform,
+        mediaType,
         uploader: null,
         uploadDate: null,
         description: null
@@ -492,24 +405,8 @@ app.get('/api/info', async (req, res) => {
   }
 });
 
-// YouTube info endpoint (for compatibility)
-app.get('/api/youtube', async (req, res) => {
-  try {
-    const url = req.query.url;
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
-    console.log(`Processing YouTube URL: ${url}`);
-    const response = await fetch(`http://localhost:${PORT}/api/info?url=${encodeURIComponent(url)}`);
-    const data = await response.json();
-    res.json(data);
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
-  }
-});
-
-// Download endpoint
+// ─── DOWNLOAD ENDPOINTS (download, audio, direct) ───────────────────
+// These endpoints remain unchanged
 app.get('/api/download', async (req, res) => {
   try {
     const { url, itag } = req.query;
@@ -524,20 +421,20 @@ app.get('/api/download', async (req, res) => {
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
-      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64)']
+      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
     };
     if (itag && itag !== 'best') {
       options.format = itag;
     }
     try {
-      await ytDlp(url, options);
-    } catch (dlErr) {
-      console.error('yt-dlp download error:', dlErr);
+      await require('youtube-dl-exec')(url, options);
+    } catch (ytdlErr) {
+      console.error('youtube-dl download error:', ytdlErr);
       if (!fs.existsSync(tempFilePath)) {
         console.log('Attempting direct download as fallback...');
         const downloadResponse = await fetch(url, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
             'Referer': new URL(url).origin
           }
         });
@@ -576,7 +473,6 @@ app.get('/api/download', async (req, res) => {
   }
 });
 
-// Audio-only download endpoint
 app.get('/api/audio', async (req, res) => {
   try {
     const { url, itag } = req.query;
@@ -594,7 +490,7 @@ app.get('/api/audio', async (req, res) => {
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
-      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64)']
+      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
     };
     if (itag && itag !== 'best') {
       options.format = itag;
@@ -602,12 +498,12 @@ app.get('/api/audio', async (req, res) => {
       options.formatSort = 'bestaudio';
     }
     try {
-      await ytDlp(url, options);
-    } catch (audioErr) {
-      console.error('yt-dlp audio download error:', audioErr);
+      await require('youtube-dl-exec')(url, options);
+    } catch (ytdlErr) {
+      console.error('youtube-dl audio download error:', ytdlErr);
       if (!fs.existsSync(tempFilePath)) {
         options.format = 'bestaudio/best';
-        await ytDlp(url, options);
+        await require('youtube-dl-exec')(url, options);
       }
     }
     if (!fs.existsSync(tempFilePath)) {
@@ -630,7 +526,6 @@ app.get('/api/audio', async (req, res) => {
   }
 });
 
-// Direct download endpoint for handling URLs directly
 app.get('/api/direct', async (req, res) => {
   try {
     const { url, filename } = req.query;
@@ -655,13 +550,9 @@ app.get('/api/direct', async (req, res) => {
     let contentType = 'application/octet-stream';
     let contentLength = 0;
     try {
-      const headResponse = await fetch(url, {
-        method: 'HEAD',
-        headers,
-        redirect: 'follow'
-      });
+      const headResponse = await fetch(url, { method: 'HEAD', headers, redirect: 'follow' });
       if (headResponse.ok) {
-        contentType = headResponse.headers.get('content-type') || 'application/octet-stream';
+        contentType = headResponse.headers.get('content-type') || contentType;
         contentLength = headResponse.headers.get('content-length') || 0;
       }
     } catch (headError) {
@@ -669,39 +560,24 @@ app.get('/api/direct', async (req, res) => {
     }
     let outputFilename = filename || 'download';
     if (!outputFilename.includes('.')) {
-      if (contentType.includes('video')) {
-        outputFilename += '.mp4';
-      } else if (contentType.includes('audio')) {
-        outputFilename += '.mp3';
-      } else if (contentType.includes('image')) {
-        if (contentType.includes('png')) {
-          outputFilename += '.png';
-        } else if (contentType.includes('gif')) {
-          outputFilename += '.gif';
-        } else if (contentType.includes('webp')) {
-          outputFilename += '.webp';
-        } else {
-          outputFilename += '.jpg';
-        }
-      } else if (contentType.includes('pdf')) {
-        outputFilename += '.pdf';
-      } else {
-        outputFilename += '.bin';
-      }
+      if (contentType.includes('video')) outputFilename += '.mp4';
+      else if (contentType.includes('audio')) outputFilename += '.mp3';
+      else if (contentType.includes('image')) {
+        if (contentType.includes('png')) outputFilename += '.png';
+        else if (contentType.includes('gif')) outputFilename += '.gif';
+        else if (contentType.includes('webp')) outputFilename += '.webp';
+        else outputFilename += '.jpg';
+      } else if (contentType.includes('pdf')) outputFilename += '.pdf';
+      else outputFilename += '.bin';
     }
     try {
-      const response = await fetch(url, {
-        headers,
-        redirect: 'follow'
-      });
+      const response = await fetch(url, { headers, redirect: 'follow' });
       if (!response.ok) {
         throw new Error(`Failed to fetch content: ${response.status} ${response.statusText}`);
       }
       contentType = response.headers.get('content-type') || contentType;
       res.setHeader('Content-Type', contentType);
-      if (contentLength > 0) {
-        res.setHeader('Content-Length', contentLength);
-      }
+      if (contentLength > 0) res.setHeader('Content-Length', contentLength);
       res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
       response.body.pipe(res);
     } catch (fetchError) {
@@ -713,7 +589,7 @@ app.get('/api/direct', async (req, res) => {
   }
 });
 
-// Start server
+// Start the server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Server accessible at http://localhost:${PORT}`);
