@@ -1,3 +1,4 @@
+// server.js - Complete solution with all platform support
 const express = require('express');
 const cors = require('cors');
 const youtubeDl = require('youtube-dl-exec');
@@ -115,7 +116,7 @@ app.get('/api/pinterest', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    console.log(Processing Pinterest URL: ${url});
+    console.log(`Processing Pinterest URL: ${url}`);
 
     // User agent for Pinterest requests
     const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
@@ -132,7 +133,7 @@ app.get('/api/pinterest', async (req, res) => {
     });
 
     if (!response.ok) {
-      throw new Error(Failed to fetch Pinterest page: ${response.status} ${response.statusText});
+      throw new Error(`Failed to fetch Pinterest page: ${response.status} ${response.statusText}`);
     }
 
     const html = await response.text();
@@ -284,7 +285,7 @@ app.get('/api/pinterest', async (req, res) => {
       } else {
         const sizeMatch = url.match(/\/([0-9]+)x\//);
         if (sizeMatch && sizeMatch[1]) {
-          quality = ${sizeMatch[1]}px;
+          quality = `${sizeMatch[1]}px`;
         }
       }
 
@@ -295,9 +296,9 @@ app.get('/api/pinterest', async (req, res) => {
       else if (url.toLowerCase().endsWith('.webp')) format = 'webp';
 
       return {
-        itag: pin_${index},
+        itag: `pin_${index}`,
         quality: quality,
-        mimeType: image/${format},
+        mimeType: `image/${format}`,
         url: url,
         hasAudio: false,
         hasVideo: false,
@@ -307,7 +308,7 @@ app.get('/api/pinterest', async (req, res) => {
     });
 
     // Create a direct download URL for the best image
-    const directDownloadUrl = /api/direct?url=${encodeURIComponent(imageUrls[0])};
+    const directDownloadUrl = `/api/direct?url=${encodeURIComponent(imageUrls[0])}`;
 
     // Return the image info
     res.json({
@@ -334,7 +335,7 @@ app.get('/api/facebook', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    console.log(Processing Facebook URL: ${url});
+    console.log(`Processing Facebook URL: ${url}`);
 
     // Prepare multiple user agents to try
     const userAgents = [
@@ -460,7 +461,7 @@ app.get('/api/facebook', async (req, res) => {
           break; // We found videos, stop trying different user agents
         }
       } catch (agentError) {
-        console.error(Error with user agent ${userAgent}:, agentError);
+        console.error(`Error with user agent ${userAgent}:`, agentError);
         continue; // Try next user agent
       }
     }
@@ -486,7 +487,7 @@ app.get('/api/facebook', async (req, res) => {
               if (format.format_note) {
                 quality = format.format_note;
               } else if (format.height) {
-                quality = ${format.height}p;
+                quality = `${format.height}p`;
               }
 
               videoUrls.push({
@@ -527,7 +528,7 @@ app.get('/api/facebook', async (req, res) => {
     // Create format objects for each video
     const formats = uniqueUrls.map((video, index) => {
       return {
-        itag: fb_${index},
+        itag: `fb_${index}`,
         quality: video.quality,
         mimeType: 'video/mp4',
         url: video.url,
@@ -543,7 +544,7 @@ app.get('/api/facebook', async (req, res) => {
     if (formats.length > 0) {
       // Prefer HD quality if available
       const hdFormat = formats.find(f => f.quality === 'HD' || f.quality.includes('720'));
-      directUrl = /api/direct?url=${encodeURIComponent(hdFormat ? hdFormat.url : formats[0].url)};
+      directUrl = `/api/direct?url=${encodeURIComponent(hdFormat ? hdFormat.url : formats[0].url)}`;
     }
 
     // Return the video info
@@ -573,18 +574,18 @@ app.get('/api/info', async (req, res) => {
 
     const platform = detectPlatform(url);
     const mediaType = getMediaType(platform);
-    console.log(Processing ${platform} URL: ${url});
+    console.log(`Processing ${platform} URL: ${url}`);
 
     // Forward to platform-specific endpoints if available
     if (platform === 'pinterest') {
       // Use dedicated Pinterest endpoint
-      const response = await fetch(http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)});
+      const response = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
       const data = await response.json();
       return res.json(data);
     }
     else if (platform === 'facebook') {
       // Use dedicated Facebook endpoint
-      const response = await fetch(http://localhost:${PORT}/api/facebook?url=${encodeURIComponent(url)});
+      const response = await fetch(`http://localhost:${PORT}/api/facebook?url=${encodeURIComponent(url)}`);
       const data = await response.json();
       return res.json(data);
     }
@@ -610,17 +611,17 @@ app.get('/api/info', async (req, res) => {
           // Define quality label
           let qualityLabel = format.format_note || format.quality || 'Unknown';
           if (format.height) {
-            qualityLabel = ${format.height}p;
-            if (format.fps) qualityLabel +=  ${format.fps}fps;
+            qualityLabel = `${format.height}p`;
+            if (format.fps) qualityLabel += ` ${format.fps}fps`;
           }
 
           // Define content type based on format
           let mimeType = 'unknown';
           if (format.ext) {
             if (isVideo) {
-              mimeType = video/${format.ext};
+              mimeType = `video/${format.ext}`;
             } else if (isAudio) {
-              mimeType = audio/${format.ext};
+              mimeType = `audio/${format.ext}`;
             }
           }
 
@@ -641,7 +642,7 @@ app.get('/api/info', async (req, res) => {
 
       // Return video info and available formats
       res.json({
-        title: info.title || ${platform}_media_${Date.now()},
+        title: info.title || `${platform}_media_${Date.now()}`,
         thumbnails: info.thumbnails ? info.thumbnails.map(t => ({ url: t.url, width: t.width, height: t.height })) : [],
         duration: info.duration,
         formats: formats,
@@ -655,10 +656,10 @@ app.get('/api/info', async (req, res) => {
       console.error('youtube-dl error:', ytdlError);
 
       // Fallback response for platforms youtube-dl can't handle
-      const fallbackThumbnail = https://via.placeholder.com/480x360.png?text=${encodeURIComponent(platform)};
+      const fallbackThumbnail = `https://via.placeholder.com/480x360.png?text=${encodeURIComponent(platform)}`;
 
       res.json({
-        title: Media from ${platform},
+        title: `Media from ${platform}`,
         thumbnails: [{ url: fallbackThumbnail, width: 480, height: 360 }],
         duration: 0,
         formats: [{
@@ -693,10 +694,10 @@ app.get('/api/youtube', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    console.log(Processing YouTube URL: ${url});
+    console.log(`Processing YouTube URL: ${url}`);
 
     // Forward to universal endpoint
-    const response = await fetch(http://localhost:${PORT}/api/info?url=${encodeURIComponent(url)});
+    const response = await fetch(`http://localhost:${PORT}/api/info?url=${encodeURIComponent(url)}`);
     const data = await response.json();
     res.json(data);
 
@@ -715,11 +716,11 @@ app.get('/api/download', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    console.log(Processing download - URL: ${url}, format: ${itag || 'best'});
+    console.log(`Processing download - URL: ${url}, format: ${itag || 'best'}`);
 
     // Generate a unique filename
     const uniqueId = Date.now();
-    const tempFilePath = path.join(TEMP_DIR, download-${uniqueId}.mp4);
+    const tempFilePath = path.join(TEMP_DIR, `download-${uniqueId}.mp4`);
 
     // Download options
     const options = {
@@ -752,7 +753,7 @@ app.get('/api/download', async (req, res) => {
         });
 
         if (!downloadResponse.ok) {
-          throw new Error(Direct download failed with status: ${downloadResponse.status});
+          throw new Error(`Direct download failed with status: ${downloadResponse.status}`);
         }
 
         const fileStream = fs.createWriteStream(tempFilePath);
@@ -781,7 +782,7 @@ app.get('/api/download', async (req, res) => {
     // Set headers for download
     res.setHeader('Content-Length', stat.size);
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', attachment; filename="download.${path.extname(tempFilePath).substring(1)}");
+    res.setHeader('Content-Disposition', `attachment; filename="download.${path.extname(tempFilePath).substring(1)}"`);
 
     // Stream the file and delete after sending
     const fileStream = fs.createReadStream(tempFilePath);
@@ -809,11 +810,11 @@ app.get('/api/audio', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    console.log(Processing audio download - URL: ${url}, format: ${itag || 'best audio'});
+    console.log(`Processing audio download - URL: ${url}, format: ${itag || 'best audio'}`);
 
     // Generate a unique filename
     const uniqueId = Date.now();
-    const tempFilePath = path.join(TEMP_DIR, audio-${uniqueId}.mp3);
+    const tempFilePath = path.join(TEMP_DIR, `audio-${uniqueId}.mp3`);
 
     // Download options specific for audio
     const options = {
@@ -858,7 +859,7 @@ app.get('/api/audio', async (req, res) => {
     // Set headers for download
     res.setHeader('Content-Length', stat.size);
     res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', attachment; filename="audio.mp3");
+    res.setHeader('Content-Disposition', `attachment; filename="audio.mp3"`);
 
     // Stream the file and delete after sending
     const fileStream = fs.createReadStream(tempFilePath);
@@ -886,7 +887,7 @@ app.get('/api/direct', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    console.log(Processing direct download: ${url});
+    console.log(`Processing direct download: ${url}`);
 
     // Prepare headers with a rotation of user agents to avoid blocking
     const userAgents = [
@@ -959,7 +960,7 @@ app.get('/api/direct', async (req, res) => {
       });
 
       if (!response.ok) {
-        throw new Error(Failed to fetch content: ${response.status} ${response.statusText});
+        throw new Error(`Failed to fetch content: ${response.status} ${response.statusText}`);
       }
 
       // Update content type if it's available from the actual response
@@ -970,12 +971,12 @@ app.get('/api/direct', async (req, res) => {
       if (contentLength > 0) {
         res.setHeader('Content-Length', contentLength);
       }
-      res.setHeader('Content-Disposition', attachment; filename="${outputFilename}");
+      res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
 
       // Pipe the response to the client
       response.body.pipe(res);
     } catch (fetchError) {
-      throw new Error(Failed to download: ${fetchError.message});
+      throw new Error(`Failed to download: ${fetchError.message}`);
     }
 
   } catch (error) {
@@ -986,7 +987,7 @@ app.get('/api/direct', async (req, res) => {
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(Server running on port ${PORT});
-  console.log(Server accessible at http://localhost:${PORT} and http://192.168.1.136:${PORT});
-  console.log(Temporary directory: ${TEMP_DIR});
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Server accessible at http://localhost:${PORT} and http://192.168.1.136:${PORT}`);
+  console.log(`Temporary directory: ${TEMP_DIR}`);
 });
