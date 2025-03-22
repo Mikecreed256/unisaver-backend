@@ -1,12 +1,9 @@
-// server.js - Complete version with all platforms
+// server.js
 const express = require('express');
 const cors = require('cors');
-const youtubeDl = require('youtube-dl-exec');
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
-const https = require('https');
-const fetch = require('node-fetch'); // Changed to CommonJS require for node-fetch v2
+const youtubeDl = require('youtube-dl-exec');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -21,237 +18,12 @@ if (!fs.existsSync(TEMP_DIR)) {
 app.use(cors());
 app.use(express.json());
 
-// Increase timeout for external requests
-http.globalAgent.maxSockets = 25;
-https.globalAgent.maxSockets = 25;
-http.globalAgent.keepAlive = true;
-https.globalAgent.keepAlive = true;
-
 // Routes
 app.get('/', (req, res) => {
   res.send('Download API is running');
 });
 
-// Enhanced platform detection
-function detectPlatform(url) {
-  const lowerUrl = url.toLowerCase();
-
-  // Social Media Platforms
-  if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) {
-    return 'youtube';
-  } else if (lowerUrl.includes('facebook.com') || lowerUrl.includes('fb.com') || lowerUrl.includes('fb.watch')) {
-    return 'facebook';
-  } else if (lowerUrl.includes('instagram.com')) {
-    return 'instagram';
-  } else if (lowerUrl.includes('tiktok.com')) {
-    return 'tiktok';
-  } else if (lowerUrl.includes('twitter.com') || lowerUrl.includes('x.com')) {
-    return 'twitter';
-  } else if (lowerUrl.includes('threads.net')) {
-    return 'threads';
-  } else if (lowerUrl.includes('pinterest.com')) {
-    return 'pinterest';
-  }
-  // Music Platforms
-  else if (lowerUrl.includes('spotify.com')) {
-    return 'spotify';
-  } else if (lowerUrl.includes('soundcloud.com')) {
-    return 'soundcloud';
-  } else if (lowerUrl.includes('bandcamp.com')) {
-    return 'bandcamp';
-  } else if (lowerUrl.includes('deezer.com')) {
-    return 'deezer';
-  } else if (lowerUrl.includes('music.apple.com')) {
-    return 'apple-music';
-  } else if (lowerUrl.includes('music.amazon.com')) {
-    return 'amazon-music';
-  } else if (lowerUrl.includes('mixcloud.com')) {
-    return 'mixcloud';
-  } else if (lowerUrl.includes('audiomack.com')) {
-    return 'audiomack';
-  }
-  // Video Platforms
-  else if (lowerUrl.includes('vimeo.com')) {
-    return 'vimeo';
-  } else if (lowerUrl.includes('dailymotion.com')) {
-    return 'dailymotion';
-  } else if (lowerUrl.includes('twitch.tv')) {
-    return 'twitch';
-  } else if (lowerUrl.includes('reddit.com')) {
-    return 'reddit';
-  } else if (lowerUrl.includes('linkedin.com')) {
-    return 'linkedin';
-  } else if (lowerUrl.includes('tumblr.com')) {
-    return 'tumblr';
-  } else if (lowerUrl.includes('vk.com')) {
-    return 'vk';
-  } else if (lowerUrl.includes('bilibili.com')) {
-    return 'bilibili';
-  } else if (lowerUrl.includes('snapchat.com')) {
-    return 'snapchat';
-  } else {
-    return 'generic';
-  }
-}
-
-// Get media type based on platform
-function getMediaType(platform) {
-  // Music platforms
-  if (['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple-music',
-    'amazon-music', 'mixcloud', 'audiomack'].includes(platform)) {
-    return 'audio';
-  }
-  // Video platforms
-  else {
-    return 'video';
-  }
-}
-
-// Helper function to check for youtube-dl binary
-function ensureYoutubeDl() {
-  try {
-    // Basic check if youtube-dl command works
-    const result = youtubeDl.exec(['--version']);
-    return true;
-  } catch (error) {
-    console.error('Error checking youtube-dl binary:', error.message);
-    console.warn('You may need to install youtube-dl or yt-dlp manually.');
-    console.warn('For more information, visit: https://github.com/ytdl-org/youtube-dl#installation');
-    return false;
-  }
-}
-
-// Check for youtube-dl on startup
-ensureYoutubeDl();
-
-// Universal info endpoint - automatically detects platform
-app.get('/api/info', async (req, res) => {
-  try {
-    const url = req.query.url;
-
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
-
-    const platform = detectPlatform(url);
-    const mediaType = getMediaType(platform);
-    console.log(`Processing ${platform} URL: ${url}`);
-
-    try {
-      // Use youtube-dl for all platforms since it supports most sites
-      const info = await youtubeDl(url, {
-        dumpSingleJson: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        preferFreeFormats: true,
-        addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
-      });
-
-      // Transform formats to match our API structure
-      const formats = info.formats
-          .filter(format => format !== null) // Filter out null formats
-          .map(format => {
-            const isVideo = format.vcodec !== 'none';
-            const isAudio = format.acodec !== 'none';
-
-            // Define quality label
-            let qualityLabel = format.format_note || format.quality || 'Unknown';
-            if (format.height) {
-              qualityLabel = `${format.height}p`;
-              if (format.fps) qualityLabel += ` ${format.fps}fps`;
-            }
-
-            // Define content type based on format
-            let mimeType = 'unknown';
-            if (format.ext) {
-              if (isVideo) {
-                mimeType = `video/${format.ext}`;
-              } else if (isAudio) {
-                mimeType = `audio/${format.ext}`;
-              }
-            }
-
-            return {
-              itag: format.format_id,
-              quality: qualityLabel,
-              mimeType: mimeType,
-              url: format.url,
-              hasAudio: isAudio,
-              hasVideo: isVideo,
-              contentLength: format.filesize || format.filesize_approx || 0,
-              audioBitrate: format.abr || null,
-              videoCodec: format.vcodec || null,
-              audioCodec: format.acodec || null,
-              container: format.ext || null
-            };
-          });
-
-      // Return video info and available formats
-      res.json({
-        title: info.title || `${platform}_media_${Date.now()}`,
-        thumbnails: info.thumbnails ? info.thumbnails.map(t => ({ url: t.url, width: t.width, height: t.height })) : [],
-        duration: info.duration,
-        formats: formats,
-        platform: platform,
-        mediaType: mediaType,
-        uploader: info.uploader || info.channel || null,
-        uploadDate: info.upload_date || null,
-        description: info.description || null
-      });
-    } catch (ytdlError) {
-      console.error('youtube-dl error:', ytdlError);
-
-      // Try platform-specific extractors as fallbacks
-      try {
-        // Fallback handling based on platform
-        if (platform === 'facebook' && require('fb-downloader')) {
-          const fbDownloader = require('fb-downloader');
-          console.log('Using fb-downloader as fallback...');
-          // Further implementation would go here
-        } else if (platform === 'tiktok' && require('tiktok-scraper')) {
-          const tiktokScraper = require('tiktok-scraper');
-          console.log('Using tiktok-scraper as fallback...');
-          // Further implementation would go here
-        } else if (platform === 'soundcloud' && require('soundcloud-downloader')) {
-          const scdl = require('soundcloud-downloader').default;
-          console.log('Using soundcloud-downloader as fallback...');
-          // Further implementation would go here
-        }
-      } catch (fallbackError) {
-        console.error('Fallback extractor error:', fallbackError);
-      }
-
-      // Fallback response for platforms youtube-dl can't handle
-      const fallbackThumbnail = `https://via.placeholder.com/480x360.png?text=${encodeURIComponent(platform)}`;
-
-      res.json({
-        title: `Media from ${platform}`,
-        thumbnails: [{ url: fallbackThumbnail, width: 480, height: 360 }],
-        duration: 0,
-        formats: [{
-          itag: 'best',
-          quality: 'Best available',
-          mimeType: mediaType === 'audio' ? 'audio/mp3' : 'video/mp4',
-          url: url,
-          hasAudio: true,
-          hasVideo: mediaType === 'video',
-          contentLength: 0
-        }],
-        platform: platform,
-        mediaType: mediaType,
-        uploader: null,
-        uploadDate: null,
-        description: null
-      });
-    }
-
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
-  }
-});
-
-// YouTube info endpoint (kept for compatibility)
+// YouTube info endpoint
 app.get('/api/youtube', async (req, res) => {
   try {
     const url = req.query.url;
@@ -260,12 +32,40 @@ app.get('/api/youtube', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    console.log(`Processing YouTube URL: ${url}`);
+    console.log(`Processing URL: ${url}`);
 
-    // Forward to universal endpoint
-    const response = await fetch(`http://localhost:${PORT}/api/info?url=${encodeURIComponent(url)}`);
-    const data = await response.json();
-    res.json(data);
+    // Get video info using youtube-dl
+    const info = await youtubeDl(url, {
+      dumpSingleJson: true,
+      noCheckCertificates: true,
+      noWarnings: true,
+      preferFreeFormats: true,
+      addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+    });
+
+    // Transform formats to match our API structure
+    const formats = info.formats.map(format => {
+      const isVideo = format.vcodec !== 'none';
+      const isAudio = format.acodec !== 'none';
+
+      return {
+        itag: format.format_id,
+        quality: format.height ? `${format.height}p` : (format.quality || 'Unknown'),
+        mimeType: format.ext ? `video/${format.ext}` : 'unknown',
+        url: format.url,
+        hasAudio: isAudio,
+        hasVideo: isVideo,
+        contentLength: format.filesize || format.filesize_approx || 0
+      };
+    });
+
+    // Return video info and available formats
+    res.json({
+      title: info.title,
+      thumbnails: info.thumbnails.map(t => ({ url: t.url, width: t.width, height: t.height })),
+      duration: info.duration,
+      formats: formats
+    });
 
   } catch (error) {
     console.error('Error:', error);
@@ -294,42 +94,16 @@ app.get('/api/download', async (req, res) => {
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
-      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+      addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
     };
 
     // If format is specified, use it
-    if (itag && itag !== 'best') {
+    if (itag) {
       options.format = itag;
     }
 
     // Download the file
-    try {
-      await youtubeDl(url, options);
-    } catch (ytdlErr) {
-      console.error('youtube-dl download error:', ytdlErr);
-
-      // For very troublesome sites, try a direct fetch approach
-      if (!fs.existsSync(tempFilePath)) {
-        console.log('Attempting direct download as fallback...');
-        const downloadResponse = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
-            'Referer': new URL(url).origin
-          }
-        });
-
-        if (!downloadResponse.ok) {
-          throw new Error(`Direct download failed with status: ${downloadResponse.status}`);
-        }
-
-        const fileStream = fs.createWriteStream(tempFilePath);
-        await new Promise((resolve, reject) => {
-          downloadResponse.body.pipe(fileStream);
-          downloadResponse.body.on('error', reject);
-          fileStream.on('finish', resolve);
-        });
-      }
-    }
+    await youtubeDl(url, options);
 
     // Check if file exists
     if (!fs.existsSync(tempFilePath)) {
@@ -339,16 +113,10 @@ app.get('/api/download', async (req, res) => {
     // Get file info
     const stat = fs.statSync(tempFilePath);
 
-    // Determine content type based on file extension
-    let contentType = 'application/octet-stream';
-    if (tempFilePath.endsWith('.mp4')) contentType = 'video/mp4';
-    else if (tempFilePath.endsWith('.mp3')) contentType = 'audio/mpeg';
-    else if (tempFilePath.endsWith('.webm')) contentType = 'video/webm';
-
     // Set headers for download
     res.setHeader('Content-Length', stat.size);
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="download.${path.extname(tempFilePath).substring(1)}"`);
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="video.mp4"`);
 
     // Stream the file and delete after sending
     const fileStream = fs.createReadStream(tempFilePath);
@@ -367,52 +135,30 @@ app.get('/api/download', async (req, res) => {
   }
 });
 
-// Audio-only download endpoint
-app.get('/api/audio', async (req, res) => {
+// Direct download endpoint for other services
+app.get('/api/direct-download', async (req, res) => {
   try {
-    const { url, itag } = req.query;
+    const { url } = req.query;
 
     if (!url) {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    console.log(`Processing audio download - URL: ${url}, format: ${itag || 'best audio'}`);
-
     // Generate a unique filename
     const uniqueId = Date.now();
-    const tempFilePath = path.join(TEMP_DIR, `audio-${uniqueId}.mp3`);
+    const tempFilePath = path.join(TEMP_DIR, `direct-download-${uniqueId}`);
 
-    // Download options specific for audio
+    // Download options
     const options = {
       output: tempFilePath,
-      extractAudio: true,
-      audioFormat: 'mp3',
-      audioQuality: 0, // Best quality
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
-      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+      addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
     };
 
-    // If format is specified, use it
-    if (itag && itag !== 'best') {
-      options.format = itag;
-    } else {
-      options.formatSort = 'bestaudio';
-    }
-
     // Download the file
-    try {
-      await youtubeDl(url, options);
-    } catch (ytdlErr) {
-      console.error('youtube-dl audio download error:', ytdlErr);
-
-      // For troublesome sites, try a more specific audio format
-      if (!fs.existsSync(tempFilePath)) {
-        options.format = 'bestaudio/best';
-        await youtubeDl(url, options);
-      }
-    }
+    await youtubeDl(url, options);
 
     // Check if file exists
     if (!fs.existsSync(tempFilePath)) {
@@ -424,8 +170,8 @@ app.get('/api/audio', async (req, res) => {
 
     // Set headers for download
     res.setHeader('Content-Length', stat.size);
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', `attachment; filename="audio.mp3"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="download"`);
 
     // Stream the file and delete after sending
     const fileStream = fs.createReadStream(tempFilePath);
@@ -439,76 +185,13 @@ app.get('/api/audio', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Audio download error:', error);
-    res.status(500).json({ error: 'Audio download failed', details: error.message });
-  }
-});
-
-// Direct download endpoint for handling URLs directly
-app.get('/api/direct', async (req, res) => {
-  try {
-    const { url, filename } = req.query;
-
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
-
-    console.log(`Processing direct download: ${url}`);
-
-    // Check if the URL is directly accessible
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
-      'Referer': new URL(url).origin
-    };
-
-    const response = await fetch(url, { method: 'HEAD', headers });
-
-    if (!response.ok) {
-      throw new Error(`URL not accessible: ${response.status} ${response.statusText}`);
-    }
-
-    // Get content type and length
-    const contentType = response.headers.get('content-type') || 'application/octet-stream';
-    const contentLength = response.headers.get('content-length');
-
-    // Determine filename if not provided
-    let outputFilename = filename || 'download';
-
-    // Add extension based on content type if not present
-    if (!outputFilename.includes('.')) {
-      if (contentType.includes('video')) {
-        outputFilename += '.mp4';
-      } else if (contentType.includes('audio')) {
-        outputFilename += '.mp3';
-      } else if (contentType.includes('image')) {
-        outputFilename += '.jpg';
-      } else if (contentType.includes('pdf')) {
-        outputFilename += '.pdf';
-      } else {
-        outputFilename += '.bin';
-      }
-    }
-
-    // Set response headers
-    res.setHeader('Content-Type', contentType);
-    if (contentLength) {
-      res.setHeader('Content-Length', contentLength);
-    }
-    res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
-
-    // Stream the content
-    const dataResponse = await fetch(url, { headers });
-    dataResponse.body.pipe(res);
-
-  } catch (error) {
     console.error('Direct download error:', error);
-    res.status(500).json({ error: 'Direct download failed', details: error.message });
+    res.status(500).json({ error: 'Download failed', details: error.message });
   }
 });
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Server accessible at http://localhost:${PORT} and http://192.168.1.136:${PORT}`);
   console.log(`Temporary directory: ${TEMP_DIR}`);
 });
