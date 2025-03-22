@@ -4,7 +4,6 @@
   "description": "Enhanced media downloader for multiple platforms",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
@@ -22,24 +21,33 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "async-retry": "^1.3.3",
+    "@bochilteam/scraper-snapsave": "^5.0.0",
+    "@mrnima/facebook-downloader": "^1.0.0",
+    "@xaviabot/fb-downloader": "^1.0.14",
+    "axios": "^1.7.7",
+    "btch-downloader": "^2.8.1",
     "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "fb-downloader": "^1.0.3",
-    "https-proxy-agent": "^7.0.1",
-    "instagram-url-direct": "^2.0.2",
-    "node-cache": "^5.1.2",
-    "node-fetch": "^2.6.12",
-    "p-timeout": "^4.1.0",
-    "user-agents": "^1.0.1444",
-    "youtube-dl-exec": "^2.4.6",
-    "ytdl-core": "^4.11.5"
+    "express": "^4.21.1",
+    "express-rate-limit": "^7.4.1",
+    "imran-dlmedia": "^0.0.1-security",
+    "memory-cache": "^0.2.0",
+    "nayan-videos-downloader": "^0.1.3",
+    "node-fetch": "^2.7.0",
+    "puppeteer-core": "^23.9.0",
+    "rahad-all-downloader": "^2.1.17",
+    "shaon-media-downloader": "^2.5.0",
+    "tube-dl-custom-action": "^2.0.5",
+    "videos-downloader": "^1.0.5",
+    "x-scrapper": "^1.0.1",
+    "yt-finder-nextgen": "^1.3.5",
+    "ytdownloader.js": "^1.0.9"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.1.7"
   },
   "engines": {
     "node": ">=16.0.0"
-  }
+  },
+  "type": "commonjs"
 }
