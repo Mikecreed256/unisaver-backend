@@ -1,7 +1,7 @@
 {
   "name": "download_server",
   "version": "1.0.0",
-  "description": "Enhanced media downloader for multiple platforms",
+  "description": "Enhanced media downloader with reliable dependencies",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -14,40 +14,23 @@
     "instagram",
     "tiktok",
     "twitter",
-    "pinterest",
-    "spotify",
-    "soundcloud"
+    "pinterest"
   ],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@bochilteam/scraper-snapsave": "^5.0.0",
-    "@mrnima/facebook-downloader": "^1.0.0",
-    "@xaviabot/fb-downloader": "^1.0.14",
-    "axios": "^1.7.7",
-    "btch-downloader": "^2.8.1",
+    "axios": "^1.6.7",
     "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",
-    "express": "^4.21.1",
-    "express-rate-limit": "^7.4.1",
-    "imran-dlmedia": "^0.0.1-security",
-    "memory-cache": "^0.2.0",
-    "nayan-videos-downloader": "^0.1.3",
-    "node-fetch": "^2.7.0",
-    "puppeteer-core": "^23.9.0",
-    "rahad-all-downloader": "^2.1.17",
-    "shaon-media-downloader": "^2.5.0",
-    "tube-dl-custom-action": "^2.0.5",
-    "videos-downloader": "^1.0.5",
-    "x-scrapper": "^1.0.1",
-    "yt-finder-nextgen": "^1.3.5",
-    "ytdownloader.js": "^1.0.9"
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "node-cache": "^5.1.2",
+    "puppeteer-core": "^21.10.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7"
+    "nodemon": "^3.0.3"
   },
   "engines": {
     "node": ">=16.0.0"
-  },
-  "type": "commonjs"
+  }
 }
