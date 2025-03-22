@@ -7,8 +7,7 @@
     "instagram-url-direct": "^2.0.2",
     "node-fetch": "^3.3.2",
     "tiktok-scraper": "^1.4.36",
-    "youtube-dl-exec": "^3.0.19",
-    "ytdl-core": "^4.11.5"
+    "yt-dlp-exec": "^1.0.0"
   },
   "name": "download_server",
   "version": "1.0.0",
