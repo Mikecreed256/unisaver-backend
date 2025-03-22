@@ -4,11 +4,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build": "echo 'Build complete'"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "engines": {
-    "node": "18.x"
-  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
   "dependencies": {
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
@@ -16,10 +17,11 @@
     "fb-downloader": "^1.0.3",
     "node-fetch": "^3.3.2",
     "pinterest-scraper": "^0.0.2",
-    "puppeteer-core": "^21.6.1",
+    "puppeteer": "^21.6.1",
     "soundcloud-downloader": "^1.0.0",
     "tiktok-scraper": "^1.4.36",
-    "youtube-dl-exec": "^2.4.17",
+    "youtube-dl-exec": "^2.5.8",
+    "yt-dlp-exec": "^1.0.2",
     "ytdl-core": "^4.11.5"
   }
 }
