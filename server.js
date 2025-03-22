@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const fetch = require('node-fetch'); // Changed to CommonJS require for node-fetch v2
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -107,6 +107,23 @@ function getMediaType(platform) {
   }
 }
 
+// Helper function to check for youtube-dl binary
+function ensureYoutubeDl() {
+  try {
+    // Basic check if youtube-dl command works
+    const result = youtubeDl.exec(['--version']);
+    return true;
+  } catch (error) {
+    console.error('Error checking youtube-dl binary:', error.message);
+    console.warn('You may need to install youtube-dl or yt-dlp manually.');
+    console.warn('For more information, visit: https://github.com/ytdl-org/youtube-dl#installation');
+    return false;
+  }
+}
+
+// Check for youtube-dl on startup
+ensureYoutubeDl();
+
 // Universal info endpoint - automatically detects platform
 app.get('/api/info', async (req, res) => {
   try {
@@ -183,6 +200,26 @@ app.get('/api/info', async (req, res) => {
       });
     } catch (ytdlError) {
       console.error('youtube-dl error:', ytdlError);
+
+      // Try platform-specific extractors as fallbacks
+      try {
+        // Fallback handling based on platform
+        if (platform === 'facebook' && require('fb-downloader')) {
+          const fbDownloader = require('fb-downloader');
+          console.log('Using fb-downloader as fallback...');
+          // Further implementation would go here
+        } else if (platform === 'tiktok' && require('tiktok-scraper')) {
+          const tiktokScraper = require('tiktok-scraper');
+          console.log('Using tiktok-scraper as fallback...');
+          // Further implementation would go here
+        } else if (platform === 'soundcloud' && require('soundcloud-downloader')) {
+          const scdl = require('soundcloud-downloader').default;
+          console.log('Using soundcloud-downloader as fallback...');
+          // Further implementation would go here
+        }
+      } catch (fallbackError) {
+        console.error('Fallback extractor error:', fallbackError);
+      }
 
       // Fallback response for platforms youtube-dl can't handle
       const fallbackThumbnail = `https://via.placeholder.com/480x360.png?text=${encodeURIComponent(platform)}`;
