@@ -9,7 +9,6 @@
     "tiktok-scraper": "^1.4.36",
     "youtube-dl-exec": "^3.0.19",
     "ytdl-core": "^4.11.5",
-    "yt-dlp-exec": "^1.0.2",
     "uuid": "^9.0.1"
   },
   "name": "download_server",
