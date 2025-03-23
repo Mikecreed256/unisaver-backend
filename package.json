@@ -10,15 +10,12 @@
     "youtube-dl-exec": "^3.0.19",
     "ytdl-core": "^4.11.5",
     "yt-dlp-exec": "^1.0.2",
-    "puppeteer": "^21.5.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "uuid": "^9.0.1",
-    "util": "^0.12.5"
+    "uuid": "^9.0.1"
   },
   "name": "download_server",
   "version": "1.0.0",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"
