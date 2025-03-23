@@ -19,7 +19,7 @@ import instagramGetUrl from 'instagram-url-direct';
 // For Facebook
 const fbDownloader = require('fb-downloader');
 // Import the specialized YouTube handler
-import { extractYouTubeMedia, downloadYouTubeVideo } from './youtube-handler.js';
+import { extractYouTubeMedia } from './youtube-handler.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -1165,7 +1165,7 @@ app.get('/api/download', async (req, res) => {
 
     console.log(`Processing download - URL: ${url}, format: ${itag || 'best'}`);
     
-    // Check if this is a Pinterest URL - use direct download instead of youtube-dl
+    // Check if this is a Pinterest URL
     if (url.includes('pinterest.com')) {
       console.log('Pinterest URL detected, using direct download method');
       
@@ -1184,137 +1184,92 @@ app.get('/api/download', async (req, res) => {
           throw new Error('No media formats found in Pinterest response');
         }
         
-        // Get the direct media URL - use the first format which should be the highest quality
+        // Instead of redirecting to our own endpoint, let's redirect directly to the source file
+        // This bypasses any potential issues with our download logic
         const directMediaUrl = pinterestData.formats[0].url;
+        console.log(`Redirecting to Pinterest media URL: ${directMediaUrl}`);
         
-        // Now do a direct download of this URL
-        console.log(`Using direct Pinterest media URL: ${directMediaUrl}`);
+        // Set the content disposition header to suggest a filename
+        res.setHeader('Content-Disposition', `attachment; filename="pinterest_media${pinterestData.mediaType === 'video' ? '.mp4' : '.jpg'}"`);
         
-        // Generate a unique filename
-        const uniqueId = uuidv4();
-        const ext = pinterestData.mediaType === 'video' ? '.mp4' : '.jpg';
-        const tempFilePath = path.join(TEMP_DIR, `pinterest-${uniqueId}${ext}`);
-        
-        // Fetch the media directly
-        const mediaResponse = await fetch(directMediaUrl, {
-          headers: {
-            'User-Agent': getRandomUserAgent(),
-            'Referer': 'https://www.pinterest.com/',
-          }
-        });
-        
-        if (!mediaResponse.ok) {
-          throw new Error(`Failed to fetch Pinterest media: ${mediaResponse.status}`);
-        }
-        
-        // Save to temp file
-        const fileStream = fs.createWriteStream(tempFilePath);
-        await new Promise((resolve, reject) => {
-          mediaResponse.body.pipe(fileStream);
-          mediaResponse.body.on('error', reject);
-          fileStream.on('finish', resolve);
-        });
-        
-        // Check if file exists and has content
-        if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
-          throw new Error('Pinterest media download failed - empty or missing file');
-        }
-        
-        // Get file info
-        const stat = fs.statSync(tempFilePath);
-        
-        // Determine content type
-        let contentType = pinterestData.mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
-        
-        // Set headers for download
-        res.setHeader('Content-Length', stat.size);
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Disposition', `attachment; filename="pinterest_media${ext}"`);
-        
-        // Stream the file and delete after sending
-        const outFileStream = fs.createReadStream(tempFilePath);
-        outFileStream.pipe(res);
-        
-        outFileStream.on('end', () => {
-          // Delete the temporary file
-          fs.unlink(tempFilePath, (err) => {
-            if (err) console.error('Error deleting temp file:', err);
-          });
-        });
-        
-        return; // Exit the function here
+        // Redirect to the actual media URL
+        return res.redirect(directMediaUrl);
       } catch (pinterestError) {
         console.error('Pinterest direct download error:', pinterestError);
-        // Fall through to direct download as last resort
+        // Use direct API as fallback
         return res.redirect(`/api/direct?url=${encodeURIComponent(url)}`);
       }
     }
     
-    // For YouTube, use our specialized download function
+    // For YouTube, use a simplified direct approach
     if (url.includes('youtube.com') || url.includes('youtu.be')) {
-      console.log('YouTube URL detected, using specialized download function');
+      console.log('YouTube URL detected, using direct approach');
       
       try {
-        // Generate a unique filename
-        const uniqueId = uuidv4();
-        const tempFilePath = path.join(TEMP_DIR, `youtube-${uniqueId}.mp4`);
+        // Extract video ID from URL
+        let videoId = null;
+        const patterns = [
+          /(?:v=|\/embed\/|\/watch\?v=|\/watch\?.+&v=|youtu\.be\/|\/v\/|\/e\/|\/shorts\/)([^#&?\/\s]{11})/,
+          /^[^#&?\/\s]{11}$/  // Direct video ID
+        ];
         
-        // Use our enhanced YouTube download function
-        const success = await downloadYouTubeVideo(url, tempFilePath, itag);
-        
-        if (!success) {
-          throw new Error('YouTube download failed');
+        for (const pattern of patterns) {
+          const match = url.match(pattern);
+          if (match && match[1]) {
+            videoId = match[1];
+            break;
+          }
         }
         
-        // Get info about the video to set a nice filename
-        let videoTitle = 'youtube_video';
+        // If no video ID found, try URL parsing
+        if (!videoId) {
+          try {
+            const urlObj = new URL(url);
+            videoId = urlObj.searchParams.get('v');
+          } catch (e) {
+            // Not a valid URL or ID extraction failed
+          }
+        }
+        
+        if (!videoId) {
+          throw new Error('Could not extract YouTube video ID');
+        }
+        
+        // Instead of trying to download ourselves, redirect to a reliable third-party service
+        // that can proxy YouTube videos without triggering bot detection.
+        //
+        // Create a format that will get converted to direct video URL through our direct download endpoint
+        // You can replace this with any other reliable YouTube proxy/download service
+        
+        // First, try to get title for better filename
+        let videoTitle = 'video';
         try {
-          const videoInfo = await extractYouTubeMedia(url);
-          if (videoInfo && videoInfo.title) {
-            // Clean the title to make it safe for a filename
-            videoTitle = videoInfo.title
-              .replace(/[\/\\:*?"<>|]/g, '_') // Remove invalid filename chars
-              .replace(/\s+/g, '_')           // Replace spaces with underscores
-              .substring(0, 100);             // Limit length
+          const infoResponse = await fetchWithTimeout(`http://localhost:${PORT}/api/youtube?url=${encodeURIComponent(url)}`);
+          if (infoResponse.ok) {
+            const videoInfo = await infoResponse.json();
+            if (videoInfo && videoInfo.title) {
+              videoTitle = videoInfo.title
+                .replace(/[\/\\:*?"<>|]/g, '_') // Remove invalid filename chars
+                .replace(/\s+/g, '_')           // Replace spaces with underscores
+                .substring(0, 100);             // Limit length
+            }
           }
         } catch (e) {
-          console.error('Error getting video title:', e);
+          console.log('Error getting video title:', e);
         }
         
-        // Check if file exists and has content
-        if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
-          throw new Error('YouTube download failed - empty or missing file');
-        }
+        // Generate our proxy URL using the direct API
+        const proxyServiceUrl = `https://api.vevioz.com/api/button/mp4/${videoId}`;
         
-        // Get file info
-        const stat = fs.statSync(tempFilePath);
-        
-        // Set headers for download
-        res.setHeader('Content-Length', stat.size);
-        res.setHeader('Content-Type', 'video/mp4');
+        // Redirect to the direct endpoint which will handle headers and downloading
         res.setHeader('Content-Disposition', `attachment; filename="${videoTitle}.mp4"`);
+        return res.redirect(proxyServiceUrl);
         
-        // Stream the file and delete after sending
-        const outFileStream = fs.createReadStream(tempFilePath);
-        outFileStream.pipe(res);
-        
-        outFileStream.on('end', () => {
-          // Delete the temporary file
-          fs.unlink(tempFilePath, (err) => {
-            if (err) console.error('Error deleting temp file:', err);
-          });
-        });
-        
-        return; // Exit the function here
       } catch (youtubeError) {
-        console.error('YouTube specialized download error:', youtubeError);
+        console.error('YouTube download error:', youtubeError);
         
-        // If we get here, we'll try the normal youtube-dl fallback
-        // If all else fails, redirect to direct download
-        if (youtubeError.message.includes('429') || youtubeError.message.includes('bot')) {
-          console.log('YouTube rate limiting detected, redirecting to /api/direct');
-          return res.redirect(`/api/direct?url=${encodeURIComponent(url)}`);
-        }
+        // If everything fails, just redirect to the original URL
+        return res.redirect(url);
       }
     }
 
@@ -1503,20 +1458,29 @@ app.get('/api/direct', async (req, res) => {
 
     console.log(`Processing direct download: ${url}`);
 
-    // Prepare headers with a random user agent
+    // Prepare headers with more browser-like headers
     const headers = {
       'User-Agent': getRandomUserAgent(),
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Referer': new URL(url).origin,
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Referer': url.includes('pinterest') ? 'https://www.pinterest.com/' : 'https://www.google.com/',
+      'sec-ch-ua': '"Not/A)Brand";v="99", "Google Chrome";v="115", "Chromium";v="115"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'sec-fetch-dest': 'document',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-site': 'none',
+      'sec-fetch-user': '?1',
+      'upgrade-insecure-requests': '1',
+      'priority': 'u=0, i'
     };
 
-    // Try to determine content type first with HEAD request
-    let contentType = 'application/octet-stream';
-    let contentLength = 0;
-
+    // Instead of trying to stream the content through our server,
+    // which can cause issues with certain content types and large files,
+    // let's redirect directly to the source URL
+    
+    // First, check if the URL is accessible and get content type/disposition
     try {
       const headResponse = await fetchWithTimeout(url, {
         method: 'HEAD',
@@ -1526,59 +1490,76 @@ app.get('/api/direct', async (req, res) => {
       });
 
       if (headResponse.ok) {
-        contentType = headResponse.headers.get('content-type') || 'application/octet-stream';
-        contentLength = headResponse.headers.get('content-length') || 0;
+        // If it's accessible, redirect directly
+        console.log('URL is directly accessible, redirecting...');
+        
+        // If we have a filename, suggest it via Content-Disposition
+        if (filename) {
+          res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        }
+        
+        // Redirect to the source URL
+        return res.redirect(url);
       }
     } catch (headError) {
-      console.log('HEAD request failed, continuing anyway:', headError.message);
+      console.log('HEAD request failed, falling back to proxy method:', headError.message);
+      // Continue to proxy method
     }
 
+    // If HEAD request fails or returns non-200, proxy the request through our server
+    console.log('Using proxy method for direct download');
+    
     // Determine filename if not provided
     let outputFilename = filename || 'download';
-
-    // Add extension based on content type if not present
-    if (!outputFilename.includes('.')) {
-      if (contentType.includes('video')) {
-        outputFilename += '.mp4';
-      } else if (contentType.includes('audio')) {
-        outputFilename += '.mp3';
-      } else if (contentType.includes('image')) {
-        if (contentType.includes('png')) {
-          outputFilename += '.png';
-        } else if (contentType.includes('gif')) {
-          outputFilename += '.gif';
-        } else if (contentType.includes('webp')) {
-          outputFilename += '.webp';
-        } else {
-          outputFilename += '.jpg';
-        }
-      } else if (contentType.includes('pdf')) {
-        outputFilename += '.pdf';
-      } else {
-        outputFilename += '.bin';
-      }
-    }
 
     // Try to fetch the content
     try {
       const response = await fetchWithTimeout(url, {
         headers,
         redirect: 'follow',
-        timeout: 30000 // 30 second timeout
+        timeout: 60000 // 60 second timeout for larger files
       });
 
       if (!response.ok) {
         throw new Error(`Failed to fetch content: ${response.status} ${response.statusText}`);
       }
 
-      // Update content type if it's available from the actual response
-      contentType = response.headers.get('content-type') || contentType;
+      // Get content type from response
+      const contentType = response.headers.get('content-type') || 'application/octet-stream';
+      
+      // If no extension in filename, add it based on content type
+      if (!outputFilename.includes('.')) {
+        if (contentType.includes('video')) {
+          outputFilename += '.mp4';
+        } else if (contentType.includes('audio')) {
+          outputFilename += '.mp3';
+        } else if (contentType.includes('image')) {
+          if (contentType.includes('png')) {
+            outputFilename += '.png';
+          } else if (contentType.includes('gif')) {
+            outputFilename += '.gif';
+          } else if (contentType.includes('webp')) {
+            outputFilename += '.webp';
+          } else {
+            outputFilename += '.jpg';
+          }
+        } else if (contentType.includes('pdf')) {
+          outputFilename += '.pdf';
+        } else {
+          outputFilename += '.bin';
+        }
+      }
 
       // Set response headers
       res.setHeader('Content-Type', contentType);
-      if (contentLength > 0) {
+      
+      // Set content length if available
+      const contentLength = response.headers.get('content-length');
+      if (contentLength) {
         res.setHeader('Content-Length', contentLength);
       }
+      
+      // Set content disposition to force download with filename
       res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
 
       // Pipe the response to the client
@@ -1589,7 +1570,11 @@ app.get('/api/direct', async (req, res) => {
 
   } catch (error) {
     console.error('Direct download error:', error);
-    res.status(500).json({ error: 'Direct download failed', details: error.message });
+    res.status(500).json({ 
+      error: 'Direct download failed', 
+      details: error.message,
+      url: url // Return the original URL in case client wants to try directly
+    });
   }
 });
 
