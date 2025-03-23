@@ -1,5 +1,6 @@
 // youtube-handler.js - A specialized handler for YouTube that doesn't rely on yt-dlp
 import fetch from 'node-fetch';
+import fs from 'fs';
 
 /**
  * Extract video ID from a YouTube URL
@@ -364,114 +365,5 @@ export async function extractYouTubeMedia(url) {
       mediaType: 'video',
       directUrl: url
     };
-  }
-}
-
-/**
- * Enhanced YouTube download function with anti-blocking measures
- * @param {string} videoUrl The YouTube URL
- * @param {string} outputPath The path to save the file
- * @param {string} itag Optional format ID
- * @returns {Promise<boolean>} Success status
- */
-export async function downloadYouTubeVideo(videoUrl, outputPath, itag = null) {
-  try {
-    console.log(`Enhanced YouTube download for: ${videoUrl}`);
-    
-    // First, get the video info using our specialized handler
-    const videoInfo = await extractYouTubeMedia(videoUrl);
-    
-    if (!videoInfo || !videoInfo.formats || videoInfo.formats.length === 0) {
-      throw new Error('Could not extract video formats');
-    }
-    
-    // Find the appropriate format
-    let format = null;
-    
-    if (itag) {
-      // Try to find the requested format
-      format = videoInfo.formats.find(f => f.itag === itag);
-    }
-    
-    if (!format) {
-      // Find a format with both audio and video
-      format = videoInfo.formats.find(f => f.hasAudio && f.hasVideo);
-      
-      // If still no format, use the first one
-      if (!format && videoInfo.formats.length > 0) {
-        format = videoInfo.formats[0];
-      }
-    }
-    
-    if (!format || !format.url) {
-      throw new Error('No suitable download format found');
-    }
-    
-    // Use a more browser-like approach for the request
-    const formatUrl = format.url;
-    console.log(`Using YouTube format URL: ${formatUrl.substring(0, 100)}...`);
-    
-    // Use different user agents for each request to avoid pattern detection
-    const userAgents = [
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Safari/605.1.15',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Mobile/15E148 Safari/604.1'
-    ];
-    
-    // Random delay to avoid pattern detection (0-2 seconds)
-    const delayMs = Math.floor(Math.random() * 2000);
-    await new Promise(resolve => setTimeout(resolve, delayMs));
-    
-    // Random user agent
-    const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-    
-    // Additional headers to make the request look more like a browser
-    const headers = {
-      'User-Agent': userAgent,
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Range': 'bytes=0-',
-      'Referer': 'https://www.youtube.com/',
-      'Origin': 'https://www.youtube.com',
-      'Connection': 'keep-alive',
-      'Sec-Fetch-Dest': 'video',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'cross-site',
-      'Pragma': 'no-cache',
-      'Cache-Control': 'no-cache'
-    };
-    
-    // Some YouTube URLs might have special characters that need to be preserved
-    const formattedUrl = formatUrl;
-    
-    // Make the request
-    const response = await fetch(formattedUrl, { headers });
-    
-    if (!response.ok) {
-      throw new Error(`Video fetch failed with status: ${response.status} ${response.statusText}`);
-    }
-    
-    // Stream to file
-    const fileStream = fs.createWriteStream(outputPath);
-    
-    await new Promise((resolve, reject) => {
-      response.body.pipe(fileStream);
-      response.body.on('error', reject);
-      fileStream.on('finish', resolve);
-    });
-    
-    // Verify file exists and has content
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-      throw new Error('Downloaded file is empty');
-    }
-    
-    console.log(`YouTube download successful: ${outputPath}`);
-    return true;
-  } catch (error) {
-    console.error('Enhanced YouTube download failed:', error);
-    return false;
   }
 }
