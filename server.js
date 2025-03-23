@@ -1,23 +1,30 @@
-// server.js - Modernized solution with improved platform support
-const express = require('express');
-const cors = require('cors');
-// Replace youtube-dl-exec with yt-dlp-exec (better maintained & more reliable)
-const ytDlp = require('yt-dlp-exec');
-const fs = require('fs');
-const path = require('path');
-const http = require('http');
-const https = require('https');
-const { promisify } = require('util');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
-// Add puppeteer for browser-based scraping (helps with Instagram, Pinterest, etc.)
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-puppeteer.use(StealthPlugin());
-// For generating unique file IDs
-const { v4: uuidv4 } = require('uuid');
+// server.js - Lightweight modernized solution
+import express from 'express';
+import cors from 'cors';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+
+// Use yt-dlp instead of youtube-dl (more reliable)
+import ytDlp from 'yt-dlp-exec';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import http from 'http';
+import https from 'https';
+import fetch from 'node-fetch';
+import { v4 as uuidv4 } from 'uuid';
+
+// For Instagram
+import instagramGetUrl from 'instagram-url-direct';
+// For Facebook
+const fbDownloader = require('fb-downloader');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Get current directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Create a temporary directory for downloads
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -25,7 +32,7 @@ if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR);
 }
 
-// Make sure temp directory is emptied on startup
+// Clean temp directory on startup
 fs.readdir(TEMP_DIR, (err, files) => {
   if (err) return console.error('Error reading temp directory:', err);
   
@@ -35,10 +42,6 @@ fs.readdir(TEMP_DIR, (err, files) => {
     });
   }
 });
-
-// Promisify fs operations
-const unlinkAsync = promisify(fs.unlink);
-const statAsync = promisify(fs.stat);
 
 // Middleware
 app.use(cors());
@@ -50,30 +53,12 @@ https.globalAgent.maxSockets = 25;
 http.globalAgent.keepAlive = true;
 https.globalAgent.keepAlive = true;
 
-// Configure fetch timeouts
-const fetchWithTimeout = async (url, options = {}) => {
-  const { timeout = 30000, ...fetchOptions } = options;
-  
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
-  try {
-    const response = await fetch(url, {
-      ...fetchOptions,
-      signal: controller.signal
-    });
-    return response;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
-
 // Routes
 app.get('/', (req, res) => {
   res.send('Download API is running');
 });
 
-// Enhanced platform detection
+// Enhanced platform detection (keep this unchanged as it works well)
 function detectPlatform(url) {
   const lowerUrl = url.toLowerCase();
 
@@ -161,76 +146,23 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)];
 }
 
-// Instagram fallback function
-async function instagramFallback(url, res) {
+// Configure fetch timeouts
+const fetchWithTimeout = async (url, options = {}) => {
+  const { timeout = 30000, ...fetchOptions } = options;
+  
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  
   try {
-    // Try yt-dlp as a fallback
-    console.log('Using yt-dlp fallback for Instagram');
-    
-    const info = await ytDlp(url, {
-      dumpSingleJson: true,
-      noCheckCertificates: true,
-      noWarnings: true,
-      addHeader: [
-        'referer:instagram.com', 
-        `user-agent:${getRandomUserAgent()}`
-      ],
-      cookies: 'instagram_cookies.txt' // Optional: create this file for persistent cookies
+    const response = await fetch(url, {
+      ...fetchOptions,
+      signal: controller.signal
     });
-    
-    if (!info || !info.formats || info.formats.length === 0) {
-      throw new Error('Could not extract video information');
-    }
-    
-    // Transform formats to match our API structure
-    const formats = info.formats.map(format => {
-      const isVideo = format.vcodec !== 'none';
-      const isAudio = format.acodec !== 'none';
-      
-      return {
-        itag: format.format_id,
-        quality: format.format_note || format.quality || 'Unknown',
-        mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-        url: format.url,
-        hasAudio: isAudio,
-        hasVideo: isVideo,
-        contentLength: format.filesize || format.filesize_approx || 0,
-        container: format.ext || null
-      };
-    });
-    
-    // Return the info
-    res.json({
-      title: info.title || 'Instagram Media',
-      thumbnails: info.thumbnails ? [info.thumbnails[0]] : [],
-      formats: formats,
-      platform: 'instagram',
-      mediaType: info.formats.some(f => f.vcodec !== 'none') ? 'video' : 'image',
-      directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
-    });
-  } catch (ytdlError) {
-    console.error('Instagram yt-dlp fallback error:', ytdlError);
-    
-    // Last resort fallback - direct link
-    res.json({
-      title: 'Instagram Media',
-      thumbnails: [{ url: 'https://via.placeholder.com/640x640.png?text=Instagram', width: 640, height: 640 }],
-      formats: [{
-        itag: 'direct',
-        quality: 'Original',
-        mimeType: 'unknown',
-        url: url,
-        hasAudio: true,
-        hasVideo: true,
-        contentLength: 0,
-        container: 'unknown'
-      }],
-      platform: 'instagram',
-      mediaType: 'unknown',
-      directUrl: url
-    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
   }
-}
+};
 
 // Instagram-specific endpoint with improved handling
 app.get('/api/instagram', async (req, res) => {
@@ -243,176 +175,137 @@ app.get('/api/instagram', async (req, res) => {
 
     console.log(`Processing Instagram URL: ${url}`);
 
-    // First try with puppeteer - most reliable for Instagram
+    // Try using instagram-url-direct first
     try {
-      const browser = await puppeteer.launch({ 
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-      });
+      const igResult = await instagramGetUrl(url);
       
-      const page = await browser.newPage();
-      
-      // Setup stealth - use mobile user agent for better results with Instagram
-      await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Mobile/15E148 Safari/604.1');
-      await page.setViewport({ width: 375, height: 812 }); // iPhone X dimensions
-      
-      // Set extra headers
-      await page.setExtraHTTPHeaders({
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-      });
-      
-      // Intercept requests to media files
-      const mediaUrls = [];
-      page.on('response', async (response) => {
-        const url = response.url();
+      if (igResult && (igResult.url_list.length > 0 || igResult.url_video.length > 0)) {
+        // Process results
+        let mediaUrls = [];
         
-        // Look for media content responses
-        if (response.status() === 200 && 
-            (url.includes('.mp4') || url.includes('.jpg') || 
-             url.includes('instagram.com/p/') || url.includes('instagram.com/reel/'))) {
-          
-          const contentType = response.headers()['content-type'] || '';
-          
-          if (contentType.includes('video') || 
-              contentType.includes('image') || 
-              url.endsWith('.mp4') || 
-              url.endsWith('.jpg')) {
-            mediaUrls.push({
-              url: url,
-              type: contentType.includes('video') || url.endsWith('.mp4') ? 'video' : 'image'
-            });
-          }
+        // Add video URLs
+        if (igResult.url_video && igResult.url_video.length > 0) {
+          mediaUrls = [...mediaUrls, ...igResult.url_video.map(url => ({
+            url: url,
+            type: 'video'
+          }))];
         }
-      });
-      
-      // Navigate to Instagram
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-      
-      // Accept cookies if the dialog appears
-      try {
-        const cookieButton = await page.waitForSelector('[role="dialog"] button:nth-child(2)', { timeout: 5000 });
-        if (cookieButton) {
-          await cookieButton.click();
-          await page.waitForTimeout(1000);
+        
+        // Add image URLs
+        if (igResult.url_list && igResult.url_list.length > 0) {
+          mediaUrls = [...mediaUrls, ...igResult.url_list.map(url => ({
+            url: url,
+            type: 'image'
+          }))];
         }
-      } catch (e) {
-        // Cookie dialog didn't appear, continue
-      }
-      
-      // Extract post data
-      const postData = await page.evaluate(() => {
-        let title = '';
-        let description = '';
         
-        // Try to get username
-        const usernameElement = document.querySelector('a.x1i10hfl[href^="/"]');
-        const username = usernameElement ? usernameElement.textContent : '';
-        
-        // Try to get description
-        const textElements = Array.from(document.querySelectorAll('div._a9zs, div._a9zm'));
-        description = textElements.length > 0 ? textElements[0].innerText : '';
-        
-        // Combine for title
-        title = username ? `${username}'s Instagram Post` : 'Instagram Post';
-        
-        // Look for media elements directly in the DOM
-        const mediaElements = [];
-        
-        // Videos
-        document.querySelectorAll('video').forEach(video => {
-          if (video.src) {
-            mediaElements.push({
-              url: video.src,
-              type: 'video'
-            });
-          }
+        // Create format objects
+        const formats = mediaUrls.map((media, index) => {
+          const isVideo = media.type === 'video';
+          
+          return {
+            itag: `ig_${index}`,
+            quality: isVideo ? 'HD' : 'Original',
+            mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
+            url: media.url,
+            hasAudio: isVideo,
+            hasVideo: isVideo,
+            contentLength: 0,
+            container: isVideo ? 'mp4' : 'jpg'
+          };
         });
         
-        // Images
-        document.querySelectorAll('img[sizes]:not([alt="Instagram"])').forEach(img => {
-          if (img.src) {
-            mediaElements.push({
-              url: img.src,
-              type: 'image'
-            });
-          }
-        });
+        // Determine primary media type (video or image)
+        const hasVideo = formats.some(f => f.hasVideo);
+        const mediaType = hasVideo ? 'video' : 'image';
         
-        return { 
-          title, 
-          description, 
-          mediaElements 
-        };
+        // Get best format for direct URL
+        const bestFormat = formats.find(f => f.hasVideo === hasVideo) || formats[0];
+        const directDownloadUrl = `/api/direct?url=${encodeURIComponent(bestFormat.url)}`;
+        
+        // Return the post info
+        return res.json({
+          title: 'Instagram Post',
+          thumbnails: [{ 
+            url: formats[0].url, 
+            width: 640, 
+            height: 640 
+          }],
+          formats: formats,
+          platform: 'instagram',
+          mediaType: mediaType,
+          directUrl: directDownloadUrl
+        });
+      }
+    } catch (igError) {
+      console.error('Instagram-url-direct error:', igError);
+    }
+    
+    // Try yt-dlp as a fallback
+    try {
+      console.log('Using yt-dlp fallback for Instagram');
+      
+      const info = await ytDlp(url, {
+        dumpSingleJson: true,
+        noCheckCertificates: true,
+        noWarnings: true,
+        addHeader: [
+          'referer:instagram.com', 
+          `user-agent:${getRandomUserAgent()}`
+        ]
       });
       
-      // Combine media found through network requests and DOM
-      let allMedia = [...mediaUrls];
-      
-      if (postData.mediaElements && postData.mediaElements.length > 0) {
-        allMedia = [...allMedia, ...postData.mediaElements];
+      if (!info || !info.formats || info.formats.length === 0) {
+        throw new Error('Could not extract video information');
       }
       
-      // Remove duplicates
-      const uniqueMedia = [];
-      const urlSet = new Set();
-      
-      for (const media of allMedia) {
-        if (!urlSet.has(media.url)) {
-          urlSet.add(media.url);
-          uniqueMedia.push(media);
-        }
-      }
-      
-      await browser.close();
-      
-      // If no media found, try fallback
-      if (uniqueMedia.length === 0) {
-        return await instagramFallback(url, res);
-      }
-      
-      // Create format objects
-      const formats = uniqueMedia.map((media, index) => {
-        const isVideo = media.type === 'video';
+      // Transform formats to match our API structure
+      const formats = info.formats.map(format => {
+        const isVideo = format.vcodec !== 'none';
+        const isAudio = format.acodec !== 'none';
         
         return {
-          itag: `ig_${index}`,
-          quality: isVideo ? 'HD' : 'Original',
+          itag: format.format_id,
+          quality: format.format_note || format.quality || 'Unknown',
           mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-          url: media.url,
-          hasAudio: isVideo,
+          url: format.url,
+          hasAudio: isAudio,
           hasVideo: isVideo,
-          contentLength: 0,
-          container: isVideo ? 'mp4' : 'jpg'
+          contentLength: format.filesize || format.filesize_approx || 0,
+          container: format.ext || null
         };
       });
       
-      // Determine primary media type (video or image)
-      const hasVideo = formats.some(f => f.hasVideo);
-      const mediaType = hasVideo ? 'video' : 'image';
-      
-      // Get best format for direct URL
-      const bestFormat = formats.find(f => f.hasVideo === hasVideo) || formats[0];
-      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(bestFormat.url)}`;
-      
-      // Return the post info
-      res.json({
-        title: postData.title,
-        description: postData.description,
-        thumbnails: [{ 
-          url: formats[0].url, 
-          width: 640, 
-          height: 640 
-        }],
+      // Return the info
+      return res.json({
+        title: info.title || 'Instagram Media',
+        thumbnails: info.thumbnails ? [info.thumbnails[0]] : [],
         formats: formats,
         platform: 'instagram',
-        mediaType: mediaType,
-        directUrl: directDownloadUrl
+        mediaType: info.formats.some(f => f.vcodec !== 'none') ? 'video' : 'image',
+        directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
       });
+    } catch (ytdlError) {
+      console.error('Instagram yt-dlp fallback error:', ytdlError);
       
-    } catch (puppeteerError) {
-      console.log('Puppeteer approach failed for Instagram, trying fallback:', puppeteerError.message);
-      return await instagramFallback(url, res);
+      // Last resort fallback - direct link
+      return res.json({
+        title: 'Instagram Media',
+        thumbnails: [{ url: 'https://via.placeholder.com/640x640.png?text=Instagram', width: 640, height: 640 }],
+        formats: [{
+          itag: 'direct',
+          quality: 'Original',
+          mimeType: 'unknown',
+          url: url,
+          hasAudio: true,
+          hasVideo: true,
+          contentLength: 0,
+          container: 'unknown'
+        }],
+        platform: 'instagram',
+        mediaType: 'unknown',
+        directUrl: url
+      });
     }
   } catch (error) {
     console.error('Instagram error:', error);
@@ -430,310 +323,290 @@ app.get('/api/pinterest', async (req, res) => {
     }
 
     console.log(`Processing Pinterest URL: ${url}`);
-
-    // Use puppeteer for better Pinterest handling
+    
+    // Try yt-dlp first
     try {
-      const browser = await puppeteer.launch({ 
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+      console.log('Using yt-dlp for Pinterest');
+      
+      const info = await ytDlp(url, {
+        dumpSingleJson: true,
+        noCheckCertificates: true,
+        noWarnings: true,
+        addHeader: [
+          'referer:pinterest.com', 
+          `user-agent:${getRandomUserAgent()}`
+        ]
       });
       
-      const page = await browser.newPage();
-      
-      // Use stealth plugin to avoid detection
-      await page.setUserAgent(getRandomUserAgent());
-      
-      // Navigate to Pinterest
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-      
-      // Accept cookies if dialog appears
-      try {
-        // Pinterest cookie consent button - adjust selector based on current Pinterest UI
-        const cookieButton = await page.waitForSelector('[data-test-id="cookie-consent-button"], button.reject-cookies-button', { timeout: 5000 });
-        if (cookieButton) {
-          await cookieButton.click();
-          await page.waitForTimeout(1000);
-        }
-      } catch (e) {
-        // Cookie dialog didn't appear, continue
+      if (!info || (!info.formats || info.formats.length === 0) && !info.url) {
+        throw new Error('Could not extract media information');
       }
       
-      // Extract pin data
-      const pinData = await page.evaluate(() => {
-        // Function to extract largest image from srcset
-        const getHighestResSrc = (srcset) => {
-          if (!srcset) return null;
-          
-          const sources = srcset.split(',').map(src => {
-            const [url, width] = src.trim().split(' ');
-            return {
-              url,
-              width: width ? parseInt(width.replace('w', '')) : 0
-            };
-          });
-          
-          sources.sort((a, b) => b.width - a.width);
-          return sources.length > 0 ? sources[0].url : null;
-        };
-        
-        // Get title
-        let title = document.querySelector('h1') ? document.querySelector('h1').innerText : '';
-        if (!title) {
-          title = document.title.replace(' | Pinterest', '').trim();
+      // Transform formats to match our API structure
+      let formats = [];
+      if (info.formats && info.formats.length > 0) {
+        formats = info.formats.map(format => {
+          const isVideo = format.vcodec !== 'none';
+          return {
+            itag: format.format_id,
+            quality: format.format_note || format.quality || 'Unknown',
+            mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
+            url: format.url,
+            hasAudio: format.acodec !== 'none',
+            hasVideo: isVideo,
+            contentLength: format.filesize || format.filesize_approx || 0,
+            container: format.ext || null
+          };
+        });
+      } else if (info.url) {
+        // Single URL case
+        const isVideo = info.ext === 'mp4';
+        formats = [{
+          itag: 'direct',
+          quality: 'Original',
+          mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
+          url: info.url,
+          hasAudio: isVideo,
+          hasVideo: isVideo,
+          contentLength: info.filesize || 0,
+          container: info.ext || null
+        }];
+      }
+      
+      // Return the info
+      return res.json({
+        title: info.title || 'Pinterest Media',
+        thumbnails: info.thumbnails ? [info.thumbnails[0]] : [{ url: formats[0].url, width: 480, height: 480 }],
+        formats: formats,
+        platform: 'pinterest',
+        mediaType: formats[0].hasVideo ? 'video' : 'image',
+        directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
+      });
+    } catch (ytdlError) {
+      console.error('Pinterest yt-dlp error:', ytdlError);
+    }
+    
+    // Try manual extraction as fallback
+    try {
+      // User agent for Pinterest requests
+      const userAgent = getRandomUserAgent();
+
+      // Fetch the actual page to find image data
+      const response = await fetchWithTimeout(url, {
+        headers: {
+          'User-Agent': userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
+        timeout: 20000
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch Pinterest page: ${response.status} ${response.statusText}`);
+      }
+
+      const html = await response.text();
+
+      // Extract title
+      let title = 'Pinterest Image';
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch && titleMatch[1]) {
+        title = titleMatch[1].replace(' | Pinterest', '').trim();
+      }
+
+      // Find image URLs directly in the HTML
+      let imageUrls = [];
+
+      // Look for high-res originals first
+      const originalImages = html.match(/https:\/\/i\.pinimg\.com\/originals\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif)/gi);
+      if (originalImages && originalImages.length > 0) {
+        imageUrls = [...new Set(originalImages)]; // Remove duplicates
+      }
+
+      // If no originals, look for specific sizes
+      if (imageUrls.length === 0) {
+        const sizedImages = html.match(/https:\/\/i\.pinimg\.com\/[0-9]+x(?:\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif))/gi);
+        if (sizedImages && sizedImages.length > 0) {
+          imageUrls = [...new Set(sizedImages)]; // Remove duplicates
         }
-        
-        // Get description
-        const description = document.querySelector('[data-test-id="pin-description"]') ? 
-                           document.querySelector('[data-test-id="pin-description"]').innerText : '';
-        
-        // Get all images
-        const images = [];
-        
-        // Look for Pinterest's main image - various selectors to try
-        const mainImgSelectors = [
-          'img[srcset][alt]:not([alt=""])',                   // Standard pins
-          'div[data-test-id="pin-closeup-image"] img[srcset]', // Closeup view
-          'div[data-test-id="pinrep-image"] img[srcset]',      // Pin representation
-          'div[role="img"] img[srcset]',                       // Role-based selection
-          'div[data-test-id="pin-CloseupMedia"] img[srcset]'   // Another closeup variant
-        ];
-        
-        for (const selector of mainImgSelectors) {
-          const imgElements = document.querySelectorAll(selector);
-          
-          for (const img of imgElements) {
-            if (img.srcset) {
-              const highResSrc = getHighestResSrc(img.srcset);
-              if (highResSrc) {
-                images.push({
-                  url: highResSrc,
-                  type: 'image'
-                });
-              } else if (img.src) {
-                images.push({
-                  url: img.src,
-                  type: 'image'
-                });
+      }
+
+      // Extract from JSON data
+      if (imageUrls.length === 0) {
+        const jsonMatch = html.match(/\{"resourceResponses":\[.*?\].*?\}/g);
+        if (jsonMatch && jsonMatch.length > 0) {
+          try {
+            const data = JSON.parse(jsonMatch[0]);
+            if (data.resourceResponses && data.resourceResponses.length > 0) {
+              const resources = data.resourceResponses[0].response?.data;
+
+              if (resources) {
+                // Extract from pin data
+                if (resources.pin) {
+                  const pin = resources.pin;
+
+                  // Update title if available
+                  if (pin.title) {
+                    title = pin.title;
+                  }
+
+                  // Get images
+                  if (pin.images && pin.images.orig) {
+                    imageUrls.push(pin.images.orig.url);
+                  }
+
+                  // Get all available sizes
+                  if (pin.images) {
+                    Object.values(pin.images).forEach(img => {
+                      if (img && img.url) {
+                        imageUrls.push(img.url);
+                      }
+                    });
+                  }
+                }
               }
-            } else if (img.src) {
-              images.push({
-                url: img.src,
-                type: 'image'
-              });
             }
-          }
-          
-          // If we found images with this selector, no need to try others
-          if (images.length > 0) break;
-        }
-        
-        // Look for videos
-        const videos = [];
-        const videoElements = document.querySelectorAll('video');
-        
-        for (const video of videoElements) {
-          if (video.src) {
-            videos.push({
-              url: video.src,
-              type: 'video'
-            });
+          } catch (jsonError) {
+            console.error('Error parsing Pinterest JSON data:', jsonError);
           }
         }
-        
-        // Find video in source elements
-        const sourceElements = document.querySelectorAll('source');
-        for (const source of sourceElements) {
-          if (source.src && (source.src.includes('.mp4') || source.type?.includes('video'))) {
-            videos.push({
-              url: source.src,
-              type: 'video'
-            });
+      }
+
+      // Look for specialized Pinterest schema data
+      if (imageUrls.length === 0) {
+        const schemaMatch = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s);
+        if (schemaMatch && schemaMatch[1]) {
+          try {
+            const schemaData = JSON.parse(schemaMatch[1]);
+            if (schemaData.image) {
+              if (Array.isArray(schemaData.image)) {
+                imageUrls = imageUrls.concat(schemaData.image);
+              } else {
+                imageUrls.push(schemaData.image);
+              }
+            }
+
+            // Update title if available
+            if (schemaData.name) {
+              title = schemaData.name;
+            }
+          } catch (schemaError) {
+            console.error('Error parsing Pinterest schema data:', schemaError);
           }
         }
-        
-        // Also check for meta og:image and og:video
-        const ogImage = document.querySelector('meta[property="og:image"]');
-        const ogVideo = document.querySelector('meta[property="og:video"]');
-        
-        if (ogImage && ogImage.content) {
-          images.push({
-            url: ogImage.content,
-            type: 'image'
-          });
+      }
+
+      // Extract from og:image meta tags
+      if (imageUrls.length === 0) {
+        const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+        if (ogImageMatch && ogImageMatch[1]) {
+          imageUrls.push(ogImageMatch[1]);
         }
-        
-        if (ogVideo && ogVideo.content) {
-          videos.push({
-            url: ogVideo.content,
-            type: 'video'
-          });
+      }
+
+      // Fallback for when no images are found
+      if (imageUrls.length === 0) {
+        throw new Error('No images found on this Pinterest page');
+      }
+
+      // Remove duplicates and filter out invalid URLs
+      imageUrls = [...new Set(imageUrls)].filter(url =>
+        url && url.startsWith('http') &&
+        /\.(jpg|jpeg|png|gif|webp)/i.test(url)
+      );
+
+      // Sort by quality (prioritize originals and larger sizes)
+      imageUrls.sort((a, b) => {
+        // Original images are preferred
+        if (a.includes('/originals/') && !b.includes('/originals/')) return -1;
+        if (!a.includes('/originals/') && b.includes('/originals/')) return 1;
+
+        // Check for resolution indicators
+        const sizesA = a.match(/\/([0-9]+)x\//);
+        const sizesB = b.match(/\/([0-9]+)x\//);
+
+        if (sizesA && sizesB) {
+          return parseInt(sizesB[1]) - parseInt(sizesA[1]); // Higher resolution first
         }
-        
-        return {
-          title,
-          description,
-          media: [...videos, ...images] // Prioritize videos
-        };
+
+        return b.length - a.length; // Longer URLs usually contain more metadata
       });
-      
-      await browser.close();
-      
-      // If no media found, try fallback
-      if (!pinData.media || pinData.media.length === 0) {
-        throw new Error('No media found in pin data');
-      }
-      
-      // Remove duplicates
-      const uniqueMedia = [];
-      const urlSet = new Set();
-      
-      for (const media of pinData.media) {
-        if (!urlSet.has(media.url)) {
-          urlSet.add(media.url);
-          uniqueMedia.push(media);
-        }
-      }
-      
-      // Create format objects
-      const formats = uniqueMedia.map((media, index) => {
-        const isVideo = media.type === 'video';
-        
-        // Determine format from URL
-        let format = 'jpg';
-        if (media.url.toLowerCase().endsWith('.png')) format = 'png';
-        else if (media.url.toLowerCase().endsWith('.gif')) format = 'gif';
-        else if (media.url.toLowerCase().endsWith('.webp')) format = 'webp';
-        else if (media.url.toLowerCase().endsWith('.mp4')) format = 'mp4';
-        
+
+      // Create format objects for each image
+      const formats = imageUrls.map((url, index) => {
         // Try to determine quality from URL
         let quality = 'Standard';
-        
-        if (media.url.includes('/originals/')) {
+
+        if (url.includes('/originals/')) {
           quality = 'Original';
         } else {
-          const sizeMatch = media.url.match(/\/([0-9]+)x\//);
+          const sizeMatch = url.match(/\/([0-9]+)x\//);
           if (sizeMatch && sizeMatch[1]) {
             quality = `${sizeMatch[1]}px`;
           }
         }
-        
+
+        // Determine image format
+        let format = 'jpg';
+        if (url.toLowerCase().endsWith('.png')) format = 'png';
+        else if (url.toLowerCase().endsWith('.gif')) format = 'gif';
+        else if (url.toLowerCase().endsWith('.webp')) format = 'webp';
+
         return {
           itag: `pin_${index}`,
           quality: quality,
-          mimeType: isVideo ? `video/${format}` : `image/${format}`,
-          url: media.url,
-          hasAudio: isVideo,
-          hasVideo: isVideo,
+          mimeType: `image/${format}`,
+          url: url,
+          hasAudio: false,
+          hasVideo: false,
           contentLength: 0,
           container: format
         };
       });
-      
-      // Create a direct download URL for the best media
-      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(uniqueMedia[0].url)}`;
-      
-      // Return the pin info
-      res.json({
-        title: pinData.title || 'Pinterest Media',
-        description: pinData.description,
-        thumbnails: [{ url: uniqueMedia[0].url, width: 480, height: 480 }],
+
+      // Create a direct download URL for the best image
+      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(imageUrls[0])}`;
+
+      // Return the image info
+      return res.json({
+        title: title,
+        thumbnails: [{ url: imageUrls[0], width: 480, height: 480 }],
         formats: formats,
         platform: 'pinterest',
-        mediaType: uniqueMedia[0].type,
+        mediaType: 'image',
         directUrl: directDownloadUrl
       });
-      
-    } catch (puppeteerError) {
-      console.error('Pinterest puppeteer error:', puppeteerError);
-      
-      // Fallback to yt-dlp
-      try {
-        console.log('Using yt-dlp fallback for Pinterest');
-        
-        const info = await ytDlp(url, {
-          dumpSingleJson: true,
-          noCheckCertificates: true,
-          noWarnings: true,
-          addHeader: [
-            'referer:pinterest.com', 
-            `user-agent:${getRandomUserAgent()}`
-          ]
-        });
-        
-        if (!info || (!info.formats || info.formats.length === 0) && !info.url) {
-          throw new Error('Could not extract media information');
-        }
-        
-        // Transform formats to match our API structure
-        let formats = [];
-        if (info.formats && info.formats.length > 0) {
-          formats = info.formats.map(format => {
-            const isVideo = format.vcodec !== 'none';
-            return {
-              itag: format.format_id,
-              quality: format.format_note || format.quality || 'Unknown',
-              mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-              url: format.url,
-              hasAudio: format.acodec !== 'none',
-              hasVideo: isVideo,
-              contentLength: format.filesize || format.filesize_approx || 0,
-              container: format.ext || null
-            };
-          });
-        } else if (info.url) {
-          // Single URL case
-          const isVideo = info.ext === 'mp4';
-          formats = [{
-            itag: 'direct',
-            quality: 'Original',
-            mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-            url: info.url,
-            hasAudio: isVideo,
-            hasVideo: isVideo,
-            contentLength: info.filesize || 0,
-            container: info.ext || null
-          }];
-        }
-        
-        // Return the info
-        res.json({
-          title: info.title || 'Pinterest Media',
-          thumbnails: info.thumbnails ? [info.thumbnails[0]] : [{ url: formats[0].url, width: 480, height: 480 }],
-          formats: formats,
-          platform: 'pinterest',
-          mediaType: formats[0].hasVideo ? 'video' : 'image',
-          directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
-        });
-      } catch (ytdlError) {
-        console.error('Pinterest yt-dlp fallback error:', ytdlError);
-        
-        // Last resort fallback - direct link
-        res.json({
-          title: 'Pinterest Media',
-          thumbnails: [{ url: 'https://via.placeholder.com/480x480.png?text=Pinterest', width: 480, height: 480 }],
-          formats: [{
-            itag: 'direct',
-            quality: 'Original',
-            mimeType: 'unknown',
-            url: url,
-            hasAudio: false,
-            hasVideo: false,
-            contentLength: 0,
-            container: 'unknown'
-          }],
-          platform: 'pinterest',
-          mediaType: 'unknown',
-          directUrl: url
-        });
-      }
+    } catch (manualError) {
+      console.error('Pinterest manual extraction error:', manualError);
     }
+    
+    // Last resort fallback
+    res.json({
+      title: 'Pinterest Media',
+      thumbnails: [{ url: 'https://via.placeholder.com/480x480.png?text=Pinterest', width: 480, height: 480 }],
+      formats: [{
+        itag: 'direct',
+        quality: 'Original',
+        mimeType: 'unknown',
+        url: url,
+        hasAudio: false,
+        hasVideo: false,
+        contentLength: 0,
+        container: 'unknown'
+      }],
+      platform: 'pinterest',
+      mediaType: 'unknown',
+      directUrl: url
+    });
   } catch (error) {
     console.error('Pinterest error:', error);
     res.status(500).json({ error: 'Pinterest processing failed', details: error.message });
   }
 });
 
-// Facebook improved endpoint
+// Facebook-specific endpoint with better error handling
 app.get('/api/facebook', async (req, res) => {
   try {
     const { url } = req.query;
@@ -744,204 +617,253 @@ app.get('/api/facebook', async (req, res) => {
 
     console.log(`Processing Facebook URL: ${url}`);
 
-    // Try puppeteer approach first
+    // Try using fb-downloader
     try {
-      const browser = await puppeteer.launch({ 
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-      });
+      const fbData = await fbDownloader(url);
       
-      const page = await browser.newPage();
-      
-      // Use stealth plugin to avoid detection
-      await page.setUserAgent(getRandomUserAgent());
-      
-      // Set extra headers
-      await page.setExtraHTTPHeaders({
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-      });
-      
-      // Track media URLs
-      const mediaUrls = [];
-      page.on('response', async (response) => {
-        const respUrl = response.url();
+      if (fbData && (fbData.hd || fbData.sd)) {
+        const formats = [];
         
-        // Look for video content responses
-        if (response.status() === 200 && 
-           (respUrl.includes('.mp4') || respUrl.includes('/video/') || 
-            respUrl.includes('fbcdn.net') || respUrl.includes('fbsbx.com'))) {
-          
-          const contentType = response.headers()['content-type'] || '';
-          
-          if (contentType.includes('video') || 
-              respUrl.endsWith('.mp4') || 
-              respUrl.includes('/video-url/')) {
-            mediaUrls.push({
-              url: respUrl,
-              quality: 'HD',
-              type: 'video'
-            });
-          }
+        if (fbData.hd) {
+          formats.push({
+            itag: 'fb_hd',
+            quality: 'HD',
+            mimeType: 'video/mp4',
+            url: fbData.hd,
+            hasAudio: true,
+            hasVideo: true,
+            contentLength: 0,
+            container: 'mp4'
+          });
         }
+        
+        if (fbData.sd) {
+          formats.push({
+            itag: 'fb_sd',
+            quality: 'SD',
+            mimeType: 'video/mp4',
+            url: fbData.sd,
+            hasAudio: true,
+            hasVideo: true,
+            contentLength: 0,
+            container: 'mp4'
+          });
+        }
+        
+        // Get direct URL for the highest quality video
+        let directUrl = '';
+        if (formats.length > 0) {
+          // Prefer HD quality if available
+          const hdFormat = formats.find(f => f.quality === 'HD');
+          directUrl = `/api/direct?url=${encodeURIComponent(hdFormat ? hdFormat.url : formats[0].url)}`;
+        }
+        
+        // Return the video info
+        return res.json({
+          title: fbData.title || 'Facebook Video',
+          thumbnails: fbData.thumbnail ? [{ url: fbData.thumbnail, width: 480, height: 360 }] : [],
+          formats: formats,
+          platform: 'facebook',
+          mediaType: 'video',
+          directUrl: directUrl
+        });
+      }
+    } catch (fbError) {
+      console.error('Facebook-downloader error:', fbError);
+    }
+    
+    // Try yt-dlp as fallback
+    try {
+      console.log('Using yt-dlp fallback for Facebook');
+      
+      const info = await ytDlp(url, {
+        dumpSingleJson: true,
+        noCheckCertificates: true,
+        noWarnings: true,
+        addHeader: [
+          'referer:facebook.com', 
+          `user-agent:${getRandomUserAgent()}`
+        ]
       });
       
-      // Navigate to Facebook
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-      
-      // Accept cookies if the dialog appears
-      try {
-        // Facebook cookie consent button
-        const cookieButton = await page.waitForSelector('[data-testid="cookie-policy-manage-dialog-accept-button"], button[title="Allow all cookies"]', { timeout: 5000 });
-        if (cookieButton) {
-          await cookieButton.click();
-          await page.waitForTimeout(1000);
-        }
-      } catch (e) {
-        // Cookie dialog didn't appear, continue
+      if (!info || !info.formats || info.formats.length === 0) {
+        throw new Error('Could not extract video information');
       }
       
-      // Extract video sources
-      const fbData = await page.evaluate(() => {
-        let title = '';
-        let thumbnail = '';
-        const videoUrls = [];
-        
-        // Get title
-        const titleElement = document.querySelector('[data-testid="post_message"]');
-        if (titleElement) {
-          title = titleElement.textContent.trim();
-        } else if (document.title) {
-          title = document.title.replace(' | Facebook', '').trim();
-        }
-        
-        // Get og:image for thumbnail
-        const ogImage = document.querySelector('meta[property="og:image"]');
-        if (ogImage) {
-          thumbnail = ogImage.getAttribute('content');
-        }
-        
-        // Direct video elements
-        const videoElements = document.querySelectorAll('video');
-        for (const video of videoElements) {
-          if (video.src) {
-            videoUrls.push({
-              url: video.src,
-              quality: 'Video Tag',
-              type: 'video'
-            });
-          }
-        }
-        
-        // Source elements
-        const sourceElements = document.querySelectorAll('source');
-        for (const source of sourceElements) {
-          if (source.src) {
-            videoUrls.push({
-              url: source.src,
-              quality: source.getAttribute('label') || 'Source Tag',
-              type: 'video'
-            });
-          }
-        }
-        
-        // Look for HD_SRC and SD_SRC in page source
-        const pageSource = document.documentElement.outerHTML;
-        
-        // HD video source
-        const hdMatch = pageSource.match(/"hd_src":"([^"]+)"/);
-        if (hdMatch && hdMatch[1]) {
-          videoUrls.push({
-            url: hdMatch[1].replace(/\\/g, ''),
-            quality: 'HD',
-            type: 'video'
-          });
-        }
-        
-        // SD video source
-        const sdMatch = pageSource.match(/"sd_src":"([^"]+)"/);
-        if (sdMatch && sdMatch[1]) {
-          videoUrls.push({
-            url: sdMatch[1].replace(/\\/g, ''),
-            quality: 'SD',
-            type: 'video'
-          });
-        }
-        
-        // Look for FBQualityLabel
-        const qualityLabels = pageSource.match(/FBQualityLabel="([^"]+)"[^>]*src="([^"]+)"/g);
-        if (qualityLabels) {
-          for (const match of qualityLabels) {
-            const labelMatch = match.match(/FBQualityLabel="([^"]+)"/);
-            const srcMatch = match.match(/src="([^"]+)"/);
-            
-            if (labelMatch && labelMatch[1] && srcMatch && srcMatch[1]) {
-              videoUrls.push({
-                url: srcMatch[1],
-                quality: labelMatch[1],
-                type: 'video'
-              });
-            }
-          }
-        }
-        
-        // og:video
-        const ogVideo = document.querySelector('meta[property="og:video:url"]');
-        if (ogVideo) {
-          videoUrls.push({
-            url: ogVideo.getAttribute('content'),
-            quality: 'og:video',
-            type: 'video'
-          });
-        }
-        
-        // og:video:secure_url
-        const ogVideoSecure = document.querySelector('meta[property="og:video:secure_url"]');
-        if (ogVideoSecure) {
-          videoUrls.push({
-            url: ogVideoSecure.getAttribute('content'),
-            quality: 'og:video:secure',
-            type: 'video'
-          });
-        }
-        
+      // Transform formats to match our API structure
+      const formats = info.formats.map(format => {
         return {
-          title,
-          thumbnail,
-          videoUrls
+          itag: format.format_id,
+          quality: format.format_note || format.quality || 'Unknown',
+          mimeType: 'video/mp4',
+          url: format.url,
+          hasAudio: format.acodec !== 'none',
+          hasVideo: format.vcodec !== 'none',
+          contentLength: format.filesize || format.filesize_approx || 0,
+          container: format.ext || null
         };
       });
       
-      await browser.close();
-      
-      // Combine all found video URLs
-      let allVideoUrls = [...mediaUrls];
-      
-      if (fbData.videoUrls && fbData.videoUrls.length > 0) {
-        allVideoUrls = [...allVideoUrls, ...fbData.videoUrls];
+      // Return the info
+      return res.json({
+        title: info.title || 'Facebook Video',
+        thumbnails: info.thumbnails ? [info.thumbnails[0]] : [],
+        formats: formats,
+        platform: 'facebook',
+        mediaType: 'video',
+        directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
+      });
+    } catch (ytdlError) {
+      console.error('Facebook yt-dlp fallback error:', ytdlError);
+    }
+    
+    // Try manual extraction as a last resort
+    try {
+      // Function to extract video URLs from HTML
+      async function extractVideoUrls(url) {
+        const results = [];
+        
+        // Use different user agents to bypass restrictions
+        const userAgents = [
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15'
+        ];
+        
+        let html = '';
+        let title = 'Facebook Video';
+        let thumbnail = '';
+        
+        // Try different user agents
+        for (const userAgent of userAgents) {
+          try {
+            const response = await fetchWithTimeout(url, {
+              headers: {
+                'User-Agent': userAgent,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+              },
+              timeout: 15000
+            });
+            
+            if (!response.ok) continue;
+            
+            html = await response.text();
+            
+            // Extract title
+            const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+            if (titleMatch && titleMatch[1]) {
+              title = titleMatch[1].replace(' | Facebook', '').trim();
+            }
+            
+            // Extract thumbnail
+            const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+            if (ogImageMatch && ogImageMatch[1]) {
+              thumbnail = ogImageMatch[1];
+            }
+            
+            // Method 1: Find HD_SRC and SD_SRC in JavaScript
+            const hdMatch = html.match(/"hd_src":"([^"]+)"/);
+            const sdMatch = html.match(/"sd_src":"([^"]+)"/);
+            
+            if (hdMatch && hdMatch[1]) {
+              results.push({
+                quality: 'HD',
+                url: hdMatch[1].replace(/\\/g, '')
+              });
+            }
+            
+            if (sdMatch && sdMatch[1]) {
+              results.push({
+                quality: 'SD',
+                url: sdMatch[1].replace(/\\/g, '')
+              });
+            }
+            
+            // Method 2: Find video tags
+            const videoTagMatches = html.match(/<video[^>]*src="([^"]+)"[^>]*>/g);
+            if (videoTagMatches) {
+              for (const videoTag of videoTagMatches) {
+                const srcMatch = videoTag.match(/src="([^"]+)"/);
+                if (srcMatch && srcMatch[1]) {
+                  results.push({
+                    quality: 'Video Tag',
+                    url: srcMatch[1]
+                  });
+                }
+              }
+            }
+            
+            // Method 3: Look for FBQualityLabel
+            const qualityLabelMatches = html.match(/FBQualityLabel="([^"]+)"[^>]*src="([^"]+)"/g);
+            if (qualityLabelMatches) {
+              for (const match of qualityLabelMatches) {
+                const labelMatch = match.match(/FBQualityLabel="([^"]+)"/);
+                const srcMatch = match.match(/src="([^"]+)"/);
+                
+                if (labelMatch && labelMatch[1] && srcMatch && srcMatch[1]) {
+                  results.push({
+                    quality: labelMatch[1],
+                    url: srcMatch[1]
+                  });
+                }
+              }
+            }
+            
+            // Method 4: Look for og:video content
+            const ogVideoMatch = html.match(/<meta property="og:video:url" content="([^"]+)"/i);
+            if (ogVideoMatch && ogVideoMatch[1]) {
+              results.push({
+                quality: 'og:video',
+                url: ogVideoMatch[1]
+              });
+            }
+            
+            // Method 5: Look for og:video:secure_url content
+            const ogVideoSecureMatch = html.match(/<meta property="og:video:secure_url" content="([^"]+)"/i);
+            if (ogVideoSecureMatch && ogVideoSecureMatch[1]) {
+              results.push({
+                quality: 'og:video:secure',
+                url: ogVideoSecureMatch[1]
+              });
+            }
+            
+            if (results.length > 0) {
+              break; // Stop trying user agents if we found videos
+            }
+          } catch (error) {
+            console.error(`Error with user agent ${userAgent}:`, error);
+            continue;
+          }
+        }
+        
+        return { results, title, thumbnail };
       }
       
-      // If no videos found, try fallback
-      if (allVideoUrls.length === 0) {
-        throw new Error('No videos found in Facebook page');
+      const { results: videoUrls, title, thumbnail } = await extractVideoUrls(url);
+      
+      if (videoUrls.length === 0) {
+        throw new Error('No videos found on this Facebook page');
       }
       
       // Remove duplicates
       const uniqueUrls = [];
       const seen = new Set();
       
-      for (const video of allVideoUrls) {
+      for (const video of videoUrls) {
         if (!seen.has(video.url)) {
           seen.add(video.url);
           uniqueUrls.push(video);
         }
       }
       
-      // Create format objects
+      // Create format objects for each video
       const formats = uniqueUrls.map((video, index) => {
         return {
           itag: `fb_${index}`,
-          quality: video.quality || 'Unknown',
+          quality: video.quality,
           mimeType: 'video/mp4',
           url: video.url,
           hasAudio: true,
@@ -960,82 +882,36 @@ app.get('/api/facebook', async (req, res) => {
       }
       
       // Return the video info
-      res.json({
-        title: fbData.title || 'Facebook Video',
-        thumbnails: fbData.thumbnail ? [{ url: fbData.thumbnail, width: 480, height: 360 }] : [],
+      return res.json({
+        title: title,
+        thumbnails: thumbnail ? [{ url: thumbnail, width: 480, height: 360 }] : [],
         formats: formats,
         platform: 'facebook',
         mediaType: 'video',
         directUrl: directUrl
       });
-      
-    } catch (puppeteerError) {
-      console.error('Facebook puppeteer error:', puppeteerError);
-      
-      // Fallback to yt-dlp
-      try {
-        console.log('Using yt-dlp fallback for Facebook');
-        
-        const info = await ytDlp(url, {
-          dumpSingleJson: true,
-          noCheckCertificates: true,
-          noWarnings: true,
-          addHeader: [
-            'referer:facebook.com', 
-            `user-agent:${getRandomUserAgent()}`
-          ]
-        });
-        
-        if (!info || !info.formats || info.formats.length === 0) {
-          throw new Error('Could not extract video information');
-        }
-        
-        // Transform formats to match our API structure
-        const formats = info.formats.map(format => {
-          return {
-            itag: format.format_id,
-            quality: format.format_note || format.quality || 'Unknown',
-            mimeType: 'video/mp4',
-            url: format.url,
-            hasAudio: format.acodec !== 'none',
-            hasVideo: format.vcodec !== 'none',
-            contentLength: format.filesize || format.filesize_approx || 0,
-            container: format.ext || null
-          };
-        });
-        
-        // Return the info
-        res.json({
-          title: info.title || 'Facebook Video',
-          thumbnails: info.thumbnails ? [info.thumbnails[0]] : [],
-          formats: formats,
-          platform: 'facebook',
-          mediaType: 'video',
-          directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
-        });
-      } catch (ytdlError) {
-        console.error('Facebook yt-dlp fallback error:', ytdlError);
-        
-        // Last resort fallback - direct link
-        res.json({
-          title: 'Facebook Video',
-          thumbnails: [{ url: 'https://via.placeholder.com/480x360.png?text=Facebook+Video', width: 480, height: 360 }],
-          formats: [{
-            itag: 'direct',
-            quality: 'Original',
-            mimeType: 'video/mp4',
-            url: url,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          }],
-          platform: 'facebook',
-          mediaType: 'video',
-          directUrl: url
-        });
-      }
+    } catch (manualError) {
+      console.error('Facebook manual extraction error:', manualError);
     }
+    
+    // Last resort fallback - direct link
+    res.json({
+      title: 'Facebook Video',
+      thumbnails: [{ url: 'https://via.placeholder.com/480x360.png?text=Facebook+Video', width: 480, height: 360 }],
+      formats: [{
+        itag: 'direct',
+        quality: 'Original',
+        mimeType: 'video/mp4',
+        url: url,
+        hasAudio: true,
+        hasVideo: true,
+        contentLength: 0,
+        container: 'mp4'
+      }],
+      platform: 'facebook',
+      mediaType: 'video',
+      directUrl: url
+    });
   } catch (error) {
     console.error('Facebook error:', error);
     res.status(500).json({ error: 'Facebook processing failed', details: error.message });
@@ -1113,7 +989,7 @@ app.get('/api/youtube', async (req, res) => {
         });
       
       // Return video info
-      res.json({
+      return res.json({
         title: info.title || 'YouTube Video',
         thumbnails: info.thumbnails ? info.thumbnails.map(t => ({ url: t.url, width: t.width, height: t.height })) : [],
         duration: info.duration,
@@ -1127,105 +1003,74 @@ app.get('/api/youtube', async (req, res) => {
       });
     } catch (ytdlError) {
       console.error('YouTube yt-dlp error:', ytdlError);
-      
-      // Fall back to puppeteer as a last resort
-      try {
-        console.log('Using puppeteer fallback for YouTube');
-        
-        const browser = await puppeteer.launch({ 
-          headless: 'new',
-          args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-        });
-        
-        const page = await browser.newPage();
-        await page.setUserAgent(getRandomUserAgent());
-        
-        // Navigate to YouTube
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-        
-        // Accept cookies if needed
-        try {
-          const cookieButton = await page.waitForSelector('#content > div.body.style-scope.ytd-consent-bump-v2-lightbox > div.eom-buttons.style-scope.ytd-consent-bump-v2-lightbox > div:nth-child(1) > ytd-button-renderer:nth-child(2)', 
-            { timeout: 5000 });
-          if (cookieButton) {
-            await cookieButton.click();
-            await page.waitForTimeout(1000);
-          }
-        } catch (e) {
-          // Cookie dialog didn't appear, continue
-        }
-        
-        // Extract video data
-        const videoData = await page.evaluate(() => {
-          // Get title
-          const title = document.querySelector('meta[property="og:title"]')?.content || 
-                        document.querySelector('meta[name="title"]')?.content || 
-                        document.title;
-          
-          // Get thumbnail
-          const thumbnail = document.querySelector('meta[property="og:image"]')?.content;
-          
-          // Get description
-          const description = document.querySelector('meta[property="og:description"]')?.content || 
-                              document.querySelector('meta[name="description"]')?.content;
-          
-          // Get uploader
-          const uploader = document.querySelector('span#owner-name a')?.textContent || 
-                          document.querySelector('div#owner-container a')?.textContent;
-          
-          return {
-            title,
-            thumbnail,
-            description,
-            uploader
-          };
-        });
-        
-        await browser.close();
-        
-        // Return a limited response
-        res.json({
-          title: videoData.title || 'YouTube Video',
-          thumbnails: videoData.thumbnail ? [{ url: videoData.thumbnail, width: 480, height: 360 }] : [],
-          description: videoData.description,
-          uploader: videoData.uploader,
-          formats: [{
-            itag: 'direct',
-            quality: 'Original',
-            mimeType: 'video/mp4',
-            url: url,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          }],
-          platform: 'youtube',
-          mediaType: 'video',
-          directUrl: url
-        });
-      } catch (puppeteerError) {
-        console.error('YouTube puppeteer fallback error:', puppeteerError);
-        
-        // Last resort fallback - just return the URL
-        res.json({
-          title: 'YouTube Video',
-          thumbnails: [{ url: 'https://via.placeholder.com/480x360.png?text=YouTube+Video', width: 480, height: 360 }],
-          formats: [{
-            itag: 'direct',
-            quality: 'Original',
-            mimeType: 'video/mp4',
-            url: url,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          }],
-          platform: 'youtube',
-          mediaType: 'video',
-          directUrl: url
-        });
-      }
     }
+    
+    // Try ytdl-core as fallback
+    try {
+      console.log('Using ytdl-core fallback for YouTube');
+      
+      // Use dynamic import for ytdl-core since we're using ES modules
+      const ytdl = (await import('ytdl-core')).default;
+      
+      const info = await ytdl.getInfo(url);
+      
+      if (!info || !info.formats || info.formats.length === 0) {
+        throw new Error('Could not extract video information with ytdl-core');
+      }
+      
+      // Transform formats to match our API structure
+      const formats = info.formats.map(format => {
+        const isVideo = format.hasVideo;
+        const isAudio = format.hasAudio;
+        
+        return {
+          itag: format.itag.toString(),
+          quality: format.qualityLabel || format.quality || 'Unknown',
+          mimeType: format.mimeType || 'unknown',
+          url: format.url,
+          hasAudio: isAudio,
+          hasVideo: isVideo,
+          contentLength: parseInt(format.contentLength) || 0,
+          audioBitrate: format.audioBitrate || null,
+          container: format.container || null
+        };
+      });
+      
+      // Return video info
+      return res.json({
+        title: info.videoDetails.title || 'YouTube Video',
+        thumbnails: info.videoDetails.thumbnails ? info.videoDetails.thumbnails.map(t => ({ url: t.url, width: t.width, height: t.height })) : [],
+        duration: parseInt(info.videoDetails.lengthSeconds) || 0,
+        formats: formats,
+        platform: 'youtube',
+        mediaType: 'video',
+        uploader: info.videoDetails.author?.name || null,
+        uploadDate: info.videoDetails.publishDate || null,
+        description: info.videoDetails.description || null,
+        directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
+      });
+    } catch (ytdlCoreError) {
+      console.error('YouTube ytdl-core fallback error:', ytdlCoreError);
+    }
+    
+    // Last resort fallback - just return the URL
+    return res.json({
+      title: 'YouTube Video',
+      thumbnails: [{ url: 'https://via.placeholder.com/480x360.png?text=YouTube+Video', width: 480, height: 360 }],
+      formats: [{
+        itag: 'direct',
+        quality: 'Original',
+        mimeType: 'video/mp4',
+        url: url,
+        hasAudio: true,
+        hasVideo: true,
+        contentLength: 0,
+        container: 'mp4'
+      }],
+      platform: 'youtube',
+      mediaType: 'video',
+      directUrl: url
+    });
   } catch (error) {
     console.error('YouTube error:', error);
     res.status(500).json({ error: 'YouTube processing failed', details: error.message });
@@ -1324,7 +1169,7 @@ app.get('/api/info', async (req, res) => {
         });
 
       // Return video info and available formats
-      res.json({
+      return res.json({
         title: info.title || `${platform}_media_${Date.now()}`,
         thumbnails: info.thumbnails ? info.thumbnails.map(t => ({ url: t.url, width: t.width, height: t.height })) : [],
         duration: info.duration,
@@ -1342,7 +1187,7 @@ app.get('/api/info', async (req, res) => {
       // Fallback response for platforms yt-dlp can't handle
       const fallbackThumbnail = `https://via.placeholder.com/480x360.png?text=${encodeURIComponent(platform)}`;
 
-      res.json({
+      return res.json({
         title: `Media from ${platform}`,
         thumbnails: [{ url: fallbackThumbnail, width: 480, height: 360 }],
         duration: 0,
@@ -1438,7 +1283,7 @@ app.get('/api/download', async (req, res) => {
     }
 
     // Get file info
-    const stat = await statAsync(tempFilePath);
+    const stat = fs.statSync(tempFilePath);
 
     // Determine content type based on file extension
     let contentType = 'application/octet-stream';
@@ -1457,8 +1302,8 @@ app.get('/api/download', async (req, res) => {
 
     fileStream.on('end', () => {
       // Delete the temporary file
-      unlinkAsync(tempFilePath).catch(err => {
-        console.error('Error deleting temp file:', err);
+      fs.unlink(tempFilePath, (err) => {
+        if (err) console.error('Error deleting temp file:', err);
       });
     });
 
@@ -1524,7 +1369,7 @@ app.get('/api/audio', async (req, res) => {
     }
 
     // Get file info
-    const stat = await statAsync(tempFilePath);
+    const stat = fs.statSync(tempFilePath);
 
     // Set headers for download
     res.setHeader('Content-Length', stat.size);
@@ -1537,8 +1382,8 @@ app.get('/api/audio', async (req, res) => {
 
     fileStream.on('end', () => {
       // Delete the temporary file
-      unlinkAsync(tempFilePath).catch(err => {
-        console.error('Error deleting temp file:', err);
+      fs.unlink(tempFilePath, (err) => {
+        if (err) console.error('Error deleting temp file:', err);
       });
     });
 
