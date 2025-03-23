@@ -1,47 +1,21 @@
-// server.js - Complete solution with proven direct download methods
-import express from 'express';
-import cors from 'cors';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-
-// Only use youtube-dl as a fallback
-import youtubeDl from 'youtube-dl-exec';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import http from 'http';
-import https from 'https';
-import fetch from 'node-fetch';
-import { v4 as uuidv4 } from 'uuid';
-
-// For Instagram
-import instagramGetUrl from 'instagram-url-direct';
-// For Facebook
-const fbDownloader = require('fb-downloader');
+// server.js - Complete solution with all platform support
+const express = require('express');
+const cors = require('cors');
+const youtubeDl = require('youtube-dl-exec');
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const https = require('https');
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// Get current directory
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Create a temporary directory for downloads
 const TEMP_DIR = path.join(__dirname, 'temp');
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR);
 }
-
-// Clean temp directory on startup
-fs.readdir(TEMP_DIR, (err, files) => {
-  if (err) return console.error('Error reading temp directory:', err);
-  
-  for (const file of files) {
-    fs.unlink(path.join(TEMP_DIR, file), err => {
-      if (err) console.error('Error deleting temp file:', err);
-    });
-  }
-});
 
 // Middleware
 app.use(cors());
@@ -57,34 +31,6 @@ https.globalAgent.keepAlive = true;
 app.get('/', (req, res) => {
   res.send('Download API is running');
 });
-
-// Extract video ID from a YouTube URL
-function extractYoutubeId(url) {
-  const patterns = [
-    /(?:v=|\/embed\/|\/watch\?v=|\/watch\?.+&v=|youtu\.be\/|\/v\/|\/e\/|\/shorts\/)([^#&?\/\s]{11})/,
-    /^[^#&?\/\s]{11}$/  // Direct video ID
-  ];
-  
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match && match[1]) {
-      return match[1];
-    }
-  }
-  
-  // Try to extract from URL params
-  try {
-    const urlObj = new URL(url);
-    const videoId = urlObj.searchParams.get('v');
-    if (videoId && videoId.length === 11) {
-      return videoId;
-    }
-  } catch (e) {
-    // Not a valid URL, continue
-  }
-  
-  return null;
-}
 
 // Enhanced platform detection
 function detectPlatform(url) {
@@ -161,187 +107,7 @@ function getMediaType(platform) {
   }
 }
 
-// Get a rotating user agent
-function getRandomUserAgent() {
-  const userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Safari/605.1.15',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Mobile/15E148 Safari/604.1'
-  ];
-  
-  return userAgents[Math.floor(Math.random() * userAgents.length)];
-}
-
-// Configure fetch timeouts
-const fetchWithTimeout = async (url, options = {}) => {
-  const { timeout = 30000, ...fetchOptions } = options;
-  
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
-  try {
-    const response = await fetch(url, {
-      ...fetchOptions,
-      signal: controller.signal
-    });
-    return response;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
-
-// Instagram-specific endpoint with improved handling
-app.get('/api/instagram', async (req, res) => {
-  try {
-    const { url } = req.query;
-
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
-
-    console.log(`Processing Instagram URL: ${url}`);
-
-    // Try using instagram-url-direct first
-    try {
-      const igResult = await instagramGetUrl(url);
-      
-      if (igResult && (igResult.url_list.length > 0 || igResult.url_video.length > 0)) {
-        // Process results
-        let mediaUrls = [];
-        
-        // Add video URLs
-        if (igResult.url_video && igResult.url_video.length > 0) {
-          mediaUrls = [...mediaUrls, ...igResult.url_video.map(url => ({
-            url: url,
-            type: 'video'
-          }))];
-        }
-        
-        // Add image URLs
-        if (igResult.url_list && igResult.url_list.length > 0) {
-          mediaUrls = [...mediaUrls, ...igResult.url_list.map(url => ({
-            url: url,
-            type: 'image'
-          }))];
-        }
-        
-        // Create format objects
-        const formats = mediaUrls.map((media, index) => {
-          const isVideo = media.type === 'video';
-          
-          return {
-            itag: `ig_${index}`,
-            quality: isVideo ? 'HD' : 'Original',
-            mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-            url: media.url,
-            hasAudio: isVideo,
-            hasVideo: isVideo,
-            contentLength: 0,
-            container: isVideo ? 'mp4' : 'jpg'
-          };
-        });
-        
-        // Determine primary media type (video or image)
-        const hasVideo = formats.some(f => f.hasVideo);
-        const mediaType = hasVideo ? 'video' : 'image';
-        
-        // Get best format for direct URL
-        const bestFormat = formats.find(f => f.hasVideo === hasVideo) || formats[0];
-        const directDownloadUrl = `/api/direct?url=${encodeURIComponent(bestFormat.url)}`;
-        
-        // Return the post info
-        return res.json({
-          title: 'Instagram Post',
-          thumbnails: [{ 
-            url: formats[0].url, 
-            width: 640, 
-            height: 640 
-          }],
-          formats: formats,
-          platform: 'instagram',
-          mediaType: mediaType,
-          directUrl: directDownloadUrl
-        });
-      }
-    } catch (igError) {
-      console.error('Instagram-url-direct error:', igError);
-    }
-    
-    // Try youtube-dl as a fallback
-    try {
-      console.log('Using youtube-dl fallback for Instagram');
-      
-      const info = await youtubeDl(url, {
-        dumpSingleJson: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        addHeader: [
-          'referer:instagram.com', 
-          `user-agent:${getRandomUserAgent()}`
-        ]
-      });
-      
-      if (!info || !info.formats || info.formats.length === 0) {
-        throw new Error('Could not extract video information');
-      }
-      
-      // Transform formats to match our API structure
-      const formats = info.formats.map(format => {
-        const isVideo = format.vcodec !== 'none';
-        const isAudio = format.acodec !== 'none';
-        
-        return {
-          itag: format.format_id,
-          quality: format.format_note || format.quality || 'Unknown',
-          mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
-          url: format.url,
-          hasAudio: isAudio,
-          hasVideo: isVideo,
-          contentLength: format.filesize || format.filesize_approx || 0,
-          container: format.ext || null
-        };
-      });
-      
-      // Return the info
-      return res.json({
-        title: info.title || 'Instagram Media',
-        thumbnails: info.thumbnails ? [info.thumbnails[0]] : [],
-        formats: formats,
-        platform: 'instagram',
-        mediaType: info.formats.some(f => f.vcodec !== 'none') ? 'video' : 'image',
-        directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
-      });
-    } catch (ytdlError) {
-      console.error('Instagram youtube-dl fallback error:', ytdlError);
-      
-      // Last resort fallback - direct link
-      return res.json({
-        title: 'Instagram Media',
-        thumbnails: [{ url: 'https://via.placeholder.com/640x640.png?text=Instagram', width: 640, height: 640 }],
-        formats: [{
-          itag: 'direct',
-          quality: 'Original',
-          mimeType: 'unknown',
-          url: url,
-          hasAudio: true,
-          hasVideo: true,
-          contentLength: 0,
-          container: 'unknown'
-        }],
-        platform: 'instagram',
-        mediaType: 'unknown',
-        directUrl: url
-      });
-    }
-  } catch (error) {
-    console.error('Instagram error:', error);
-    res.status(500).json({ error: 'Instagram processing failed', details: error.message });
-  }
-});
-
-// Pinterest improved endpoint that doesn't rely on external tools
+// Improved Pinterest handler
 app.get('/api/pinterest', async (req, res) => {
   try {
     const { url } = req.query;
@@ -352,304 +118,215 @@ app.get('/api/pinterest', async (req, res) => {
 
     console.log(`Processing Pinterest URL: ${url}`);
 
-    // Use direct extraction - no external binaries required
-    try {
-      // User agent for Pinterest requests
-      const userAgent = getRandomUserAgent();
+    // User agent for Pinterest requests
+    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
 
-      // First, get the actual page to find image data
-      const response = await fetchWithTimeout(url, {
-        headers: {
-          'User-Agent': userAgent,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-        },
-        timeout: 20000
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch Pinterest page: ${response.status} ${response.statusText}`);
+    // First, get the actual page to find image data
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': userAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
       }
+    });
 
-      const html = await response.text();
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Pinterest page: ${response.status} ${response.statusText}`);
+    }
 
-      // Extract title
-      let title = 'Pinterest Media';
-      const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-      if (titleMatch && titleMatch[1]) {
-        title = titleMatch[1].replace(' | Pinterest', '').trim();
+    const html = await response.text();
+
+    // Extract title
+    let title = 'Pinterest Image';
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+    if (titleMatch && titleMatch[1]) {
+      title = titleMatch[1].replace(' | Pinterest', '').trim();
+    }
+
+    // Method 1: Find image URLs directly in the HTML
+    let imageUrls = [];
+
+    // Look for high-res originals first
+    const originalImages = html.match(/https:\/\/i\.pinimg\.com\/originals\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif)/gi);
+    if (originalImages && originalImages.length > 0) {
+      imageUrls = [...new Set(originalImages)]; // Remove duplicates
+    }
+
+    // If no originals, look for specific sizes (736x is common for Pinterest)
+    if (imageUrls.length === 0) {
+      const sizedImages = html.match(/https:\/\/i\.pinimg\.com\/[0-9]+x(?:\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif))/gi);
+      if (sizedImages && sizedImages.length > 0) {
+        imageUrls = [...new Set(sizedImages)]; // Remove duplicates
       }
+    }
 
-      // Find image URLs directly in the HTML
-      let imageUrls = [];
+    // Method 2: Extract from JSON data
+    if (imageUrls.length === 0) {
+      const jsonMatch = html.match(/\{"resourceResponses":\[.*?\].*?\}/g);
+      if (jsonMatch && jsonMatch.length > 0) {
+        try {
+          const data = JSON.parse(jsonMatch[0]);
+          if (data.resourceResponses && data.resourceResponses.length > 0) {
+            const resources = data.resourceResponses[0].response?.data;
 
-      // Look for high-res originals first
-      const originalImages = html.match(/https:\/\/i\.pinimg\.com\/originals\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif)/gi);
-      if (originalImages && originalImages.length > 0) {
-        imageUrls = [...new Set(originalImages)]; // Remove duplicates
-      }
+            if (resources) {
+              // Try to extract from pin data
+              if (resources.pin) {
+                const pin = resources.pin;
 
-      // If no originals, look for specific sizes (736x is common for Pinterest)
-      if (imageUrls.length === 0) {
-        const sizedImages = html.match(/https:\/\/i\.pinimg\.com\/[0-9]+x(?:\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif))/gi);
-        if (sizedImages && sizedImages.length > 0) {
-          imageUrls = [...new Set(sizedImages)]; // Remove duplicates
-        }
-      }
-
-      // Extract from JSON data
-      if (imageUrls.length === 0) {
-        const jsonMatch = html.match(/\{"resourceResponses":\[.*?\].*?\}/g);
-        if (jsonMatch && jsonMatch.length > 0) {
-          try {
-            const data = JSON.parse(jsonMatch[0]);
-            if (data.resourceResponses && data.resourceResponses.length > 0) {
-              const resources = data.resourceResponses[0].response?.data;
-
-              if (resources) {
-                // Try to extract from pin data
-                if (resources.pin) {
-                  const pin = resources.pin;
-
-                  // Update title if available
-                  if (pin.title) {
-                    title = pin.title;
-                  }
-
-                  // Get images
-                  if (pin.images && pin.images.orig) {
-                    imageUrls.push(pin.images.orig.url);
-                  }
-
-                  // Get all available sizes
-                  if (pin.images) {
-                    Object.values(pin.images).forEach(img => {
-                      if (img && img.url) {
-                        imageUrls.push(img.url);
-                      }
-                    });
-                  }
+                // Update title if available
+                if (pin.title) {
+                  title = pin.title;
                 }
 
-                // Extract from multiple pins in a board
-                if (resources.board?.pins) {
-                  resources.board.pins.forEach(pin => {
-                    if (pin.images && pin.images.orig) {
-                      imageUrls.push(pin.images.orig.url);
+                // Get images
+                if (pin.images && pin.images.orig) {
+                  imageUrls.push(pin.images.orig.url);
+                }
+
+                // Get all available sizes
+                if (pin.images) {
+                  Object.values(pin.images).forEach(img => {
+                    if (img && img.url) {
+                      imageUrls.push(img.url);
                     }
                   });
                 }
               }
-            }
-          } catch (jsonError) {
-            console.error('Error parsing Pinterest JSON data:', jsonError);
-          }
-        }
-      }
 
-      // Look for specialized Pinterest schema data
-      if (imageUrls.length === 0) {
-        const schemaMatch = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s);
-        if (schemaMatch && schemaMatch[1]) {
-          try {
-            const schemaData = JSON.parse(schemaMatch[1]);
-            if (schemaData.image) {
-              if (Array.isArray(schemaData.image)) {
-                imageUrls = imageUrls.concat(schemaData.image);
-              } else {
-                imageUrls.push(schemaData.image);
+              // Extract from multiple pins in a board
+              if (resources.board?.pins) {
+                resources.board.pins.forEach(pin => {
+                  if (pin.images && pin.images.orig) {
+                    imageUrls.push(pin.images.orig.url);
+                  }
+                });
               }
             }
+          }
+        } catch (jsonError) {
+          console.error('Error parsing Pinterest JSON data:', jsonError);
+        }
+      }
+    }
 
-            // Update title if available
-            if (schemaData.name) {
-              title = schemaData.name;
+    // Method 3: Look for specialized Pinterest schema data
+    if (imageUrls.length === 0) {
+      const schemaMatch = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s);
+      if (schemaMatch && schemaMatch[1]) {
+        try {
+          const schemaData = JSON.parse(schemaMatch[1]);
+          if (schemaData.image) {
+            if (Array.isArray(schemaData.image)) {
+              imageUrls = imageUrls.concat(schemaData.image);
+            } else {
+              imageUrls.push(schemaData.image);
             }
-          } catch (schemaError) {
-            console.error('Error parsing Pinterest schema data:', schemaError);
-          }
-        }
-      }
-
-      // Extract from og:image meta tags
-      if (imageUrls.length === 0) {
-        const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
-        if (ogImageMatch && ogImageMatch[1]) {
-          imageUrls.push(ogImageMatch[1]);
-        }
-      }
-      
-      // Look for videos too
-      let videoUrls = [];
-      
-      // Look for video sources in the HTML
-      const videoSources = html.match(/<source[^>]*src="([^"]+\.mp4[^"]*)"[^>]*>/gi);
-      if (videoSources && videoSources.length > 0) {
-        for (const sourceTag of videoSources) {
-          const srcMatch = sourceTag.match(/src="([^"]+\.mp4[^"]*)"/i);
-          if (srcMatch && srcMatch[1]) {
-            videoUrls.push(srcMatch[1]);
-          }
-        }
-      }
-      
-      // Look for video tags
-      const videoTags = html.match(/<video[^>]*src="([^"]+\.mp4[^"]*)"[^>]*>/gi);
-      if (videoTags && videoTags.length > 0) {
-        for (const videoTag of videoTags) {
-          const srcMatch = videoTag.match(/src="([^"]+\.mp4[^"]*)"/i);
-          if (srcMatch && srcMatch[1]) {
-            videoUrls.push(srcMatch[1]);
-          }
-        }
-      }
-      
-      // Look for og:video
-      const ogVideoMatch = html.match(/<meta property="og:video" content="([^"]+)"/i);
-      if (ogVideoMatch && ogVideoMatch[1]) {
-        videoUrls.push(ogVideoMatch[1]);
-      }
-      
-      // Look for video URLs in the HTML content
-      const contentVideoUrls = html.match(/https:\/\/v\.pinimg\.com\/[a-zA-Z0-9\/\._-]+\.mp4/gi);
-      if (contentVideoUrls && contentVideoUrls.length > 0) {
-        videoUrls = [...videoUrls, ...contentVideoUrls];
-      }
-      
-      // Combined media URLs
-      let mediaUrls = [];
-      
-      // Prioritize videos if found
-      if (videoUrls.length > 0) {
-        // Remove duplicates
-        videoUrls = [...new Set(videoUrls)].filter(url =>
-          url && url.startsWith('http')
-        );
-        
-        mediaUrls = videoUrls.map(url => ({
-          url: url,
-          type: 'video'
-        }));
-      }
-      
-      // Add images if found
-      if (imageUrls.length > 0) {
-        // Remove duplicates and filter out invalid URLs
-        imageUrls = [...new Set(imageUrls)].filter(url =>
-          url && url.startsWith('http') &&
-          /\.(jpg|jpeg|png|gif|webp)/i.test(url)
-        );
-        
-        // Sort by quality (prioritize originals and larger sizes)
-        imageUrls.sort((a, b) => {
-          // Original images are preferred
-          if (a.includes('/originals/') && !b.includes('/originals/')) return -1;
-          if (!a.includes('/originals/') && b.includes('/originals/')) return 1;
-
-          // Check for resolution indicators
-          const sizesA = a.match(/\/([0-9]+)x\//);
-          const sizesB = b.match(/\/([0-9]+)x\//);
-
-          if (sizesA && sizesB) {
-            return parseInt(sizesB[1]) - parseInt(sizesA[1]); // Higher resolution first
           }
 
-          return b.length - a.length; // Longer URLs usually contain more metadata
-        });
-        
-        const imageMedia = imageUrls.map(url => ({
-          url: url,
-          type: 'image'
-        }));
-        
-        mediaUrls = [...mediaUrls, ...imageMedia];
-      }
-
-      // If no media found at all
-      if (mediaUrls.length === 0) {
-        throw new Error('No images or videos found on this Pinterest page');
-      }
-
-      // Create format objects for each media item
-      const formats = mediaUrls.map((media, index) => {
-        const isVideo = media.type === 'video';
-        
-        // Determine format from URL
-        let format = 'jpg';
-        const url = media.url.toLowerCase();
-        
-        if (url.endsWith('.png')) format = 'png';
-        else if (url.endsWith('.gif')) format = 'gif';
-        else if (url.endsWith('.webp')) format = 'webp';
-        else if (url.endsWith('.mp4')) format = 'mp4';
-        
-        // Try to determine quality from URL
-        let quality = 'Standard';
-        
-        if (url.includes('/originals/')) {
-          quality = 'Original';
-        } else {
-          const sizeMatch = url.match(/\/([0-9]+)x\//);
-          if (sizeMatch && sizeMatch[1]) {
-            quality = `${sizeMatch[1]}px`;
+          // Update title if available
+          if (schemaData.name) {
+            title = schemaData.name;
           }
+        } catch (schemaError) {
+          console.error('Error parsing Pinterest schema data:', schemaError);
         }
-        
-        return {
-          itag: `pin_${index}`,
-          quality: quality,
-          mimeType: isVideo ? `video/${format}` : `image/${format}`,
-          url: media.url,
-          hasAudio: isVideo,
-          hasVideo: isVideo,
-          contentLength: 0,
-          container: format
-        };
-      });
+      }
+    }
 
-      // Create a direct download URL for the best media
-      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(mediaUrls[0].url)}`;
+    // Method 4: Extract from og:image meta tags
+    if (imageUrls.length === 0) {
+      const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+      if (ogImageMatch && ogImageMatch[1]) {
+        imageUrls.push(ogImageMatch[1]);
+      }
+    }
 
-      // Return the media info
-      return res.json({
-        title: title,
-        thumbnails: [{ url: mediaUrls[0].url, width: 480, height: 480 }],
-        formats: formats,
-        platform: 'pinterest',
-        mediaType: mediaUrls[0].type,
-        directUrl: directDownloadUrl
-      });
-    } catch (error) {
-      console.error('Pinterest extraction error:', error);
-      
-      // Last resort fallback
-      res.json({
-        title: 'Pinterest Media',
-        thumbnails: [{ url: 'https://via.placeholder.com/480x480.png?text=Pinterest', width: 480, height: 480 }],
-        formats: [{
-          itag: 'direct',
-          quality: 'Original',
-          mimeType: 'unknown',
-          url: url,
-          hasAudio: false,
-          hasVideo: false,
-          contentLength: 0,
-          container: 'unknown'
-        }],
-        platform: 'pinterest',
-        mediaType: 'unknown',
-        directUrl: url
+    // Fallback for when no images are found
+    if (imageUrls.length === 0) {
+      return res.status(404).json({
+        error: 'No images found on this Pinterest page',
+        details: 'Try opening the pin in a browser and copying the image URL directly'
       });
     }
+
+    // Remove duplicates and filter out invalid URLs
+    imageUrls = [...new Set(imageUrls)].filter(url =>
+      url && url.startsWith('http') &&
+      /\.(jpg|jpeg|png|gif|webp)/i.test(url)
+    );
+
+    // Sort by quality (prioritize originals and larger sizes)
+    imageUrls.sort((a, b) => {
+      // Original images are preferred
+      if (a.includes('/originals/') && !b.includes('/originals/')) return -1;
+      if (!a.includes('/originals/') && b.includes('/originals/')) return 1;
+
+      // Check for resolution indicators
+      const sizesA = a.match(/\/([0-9]+)x\//);
+      const sizesB = b.match(/\/([0-9]+)x\//);
+
+      if (sizesA && sizesB) {
+        return parseInt(sizesB[1]) - parseInt(sizesA[1]); // Higher resolution first
+      }
+
+      return b.length - a.length; // Longer URLs usually contain more metadata
+    });
+
+    // Create format objects for each image
+    const formats = imageUrls.map((url, index) => {
+      // Try to determine quality from URL
+      let quality = 'Standard';
+
+      if (url.includes('/originals/')) {
+        quality = 'Original';
+      } else {
+        const sizeMatch = url.match(/\/([0-9]+)x\//);
+        if (sizeMatch && sizeMatch[1]) {
+          quality = `${sizeMatch[1]}px`;
+        }
+      }
+
+      // Determine image format
+      let format = 'jpg';
+      if (url.toLowerCase().endsWith('.png')) format = 'png';
+      else if (url.toLowerCase().endsWith('.gif')) format = 'gif';
+      else if (url.toLowerCase().endsWith('.webp')) format = 'webp';
+
+      return {
+        itag: `pin_${index}`,
+        quality: quality,
+        mimeType: `image/${format}`,
+        url: url,
+        hasAudio: false,
+        hasVideo: false,
+        contentLength: 0,
+        container: format
+      };
+    });
+
+    // Create a direct download URL for the best image
+    const directDownloadUrl = `/api/direct?url=${encodeURIComponent(imageUrls[0])}`;
+
+    // Return the image info
+    res.json({
+      title: title,
+      thumbnails: [{ url: imageUrls[0], width: 480, height: 480 }],
+      formats: formats,
+      platform: 'pinterest',
+      mediaType: 'image',
+      directUrl: directDownloadUrl
+    });
+
   } catch (error) {
     console.error('Pinterest error:', error);
     res.status(500).json({ error: 'Pinterest processing failed', details: error.message });
   }
 });
 
-// Facebook-specific endpoint with better error handling
+// Facebook-specific endpoint for better video extraction
 app.get('/api/facebook', async (req, res) => {
   try {
     const { url } = req.query;
@@ -660,456 +337,229 @@ app.get('/api/facebook', async (req, res) => {
 
     console.log(`Processing Facebook URL: ${url}`);
 
-    // Try using fb-downloader
-    try {
-      const fbData = await fbDownloader(url);
-      
-      if (fbData && (fbData.hd || fbData.sd)) {
-        const formats = [];
-        
-        if (fbData.hd) {
-          formats.push({
-            itag: 'fb_hd',
-            quality: 'HD',
-            mimeType: 'video/mp4',
-            url: fbData.hd,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          });
-        }
-        
-        if (fbData.sd) {
-          formats.push({
-            itag: 'fb_sd',
-            quality: 'SD',
-            mimeType: 'video/mp4',
-            url: fbData.sd,
-            hasAudio: true,
-            hasVideo: true,
-            contentLength: 0,
-            container: 'mp4'
-          });
-        }
-        
-        // Get direct URL for the highest quality video
-        let directUrl = '';
-        if (formats.length > 0) {
-          // Prefer HD quality if available
-          const hdFormat = formats.find(f => f.quality === 'HD');
-          directUrl = `/api/direct?url=${encodeURIComponent(hdFormat ? hdFormat.url : formats[0].url)}`;
-        }
-        
-        // Return the video info
-        return res.json({
-          title: fbData.title || 'Facebook Video',
-          thumbnails: fbData.thumbnail ? [{ url: fbData.thumbnail, width: 480, height: 360 }] : [],
-          formats: formats,
-          platform: 'facebook',
-          mediaType: 'video',
-          directUrl: directUrl
+    // Prepare multiple user agents to try
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15'
+    ];
+
+    // Function to extract video URLs from HTML
+    function extractVideoUrls(html) {
+      const results = [];
+
+      // Method 1: Find HD_SRC and SD_SRC in JavaScript
+      const hdMatch = html.match(/"hd_src":"([^"]+)"/);
+      const sdMatch = html.match(/"sd_src":"([^"]+)"/);
+
+      if (hdMatch && hdMatch[1]) {
+        results.push({
+          quality: 'HD',
+          url: hdMatch[1].replace(/\\/g, '')
         });
       }
-    } catch (fbError) {
-      console.error('Facebook-downloader error:', fbError);
-    }
-    
-    // Try youtube-dl as fallback
-    try {
-      console.log('Using youtube-dl fallback for Facebook');
-      
-      const info = await youtubeDl(url, {
-        dumpSingleJson: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        addHeader: [
-          'referer:facebook.com', 
-          `user-agent:${getRandomUserAgent()}`
-        ]
-      });
-      
-      if (!info || !info.formats || info.formats.length === 0) {
-        throw new Error('Could not extract video information');
+
+      if (sdMatch && sdMatch[1]) {
+        results.push({
+          quality: 'SD',
+          url: sdMatch[1].replace(/\\/g, '')
+        });
       }
-      
-      // Transform formats to match our API structure
-      const formats = info.formats.map(format => {
-        return {
-          itag: format.format_id,
-          quality: format.format_note || format.quality || 'Unknown',
-          mimeType: 'video/mp4',
-          url: format.url,
-          hasAudio: format.acodec !== 'none',
-          hasVideo: format.vcodec !== 'none',
-          contentLength: format.filesize || format.filesize_approx || 0,
-          container: format.ext || null
-        };
-      });
-      
-      // Return the info
-      return res.json({
-        title: info.title || 'Facebook Video',
-        thumbnails: info.thumbnails ? [info.thumbnails[0]] : [],
-        formats: formats,
-        platform: 'facebook',
-        mediaType: 'video',
-        directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
-      });
-    } catch (ytdlError) {
-      console.error('Facebook youtube-dl fallback error:', ytdlError);
-    }
-    
-    // Try manual extraction as a last resort
-    try {
-      // Function to extract video URLs from HTML
-      async function extractVideoUrls(url) {
-        const results = [];
-        
-        // Use different user agents to bypass restrictions
-        const userAgents = [
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15'
-        ];
-        
-        let html = '';
-        let title = 'Facebook Video';
-        let thumbnail = '';
-        
-        // Try different user agents
-        for (const userAgent of userAgents) {
-          try {
-            const response = await fetchWithTimeout(url, {
-              headers: {
-                'User-Agent': userAgent,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache',
-              },
-              timeout: 15000
+
+      // Method 2: Find video tags
+      const videoTagMatches = html.match(/<video[^>]*src="([^"]+)"[^>]*>/g);
+      if (videoTagMatches) {
+        for (const videoTag of videoTagMatches) {
+          const srcMatch = videoTag.match(/src="([^"]+)"/);
+          if (srcMatch && srcMatch[1]) {
+            results.push({
+              quality: 'Video Tag',
+              url: srcMatch[1]
             });
-            
-            if (!response.ok) continue;
-            
-            html = await response.text();
-            
-            // Extract title
-            const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-            if (titleMatch && titleMatch[1]) {
-              title = titleMatch[1].replace(' | Facebook', '').trim();
-            }
-            
-            // Extract thumbnail
-            const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
-            if (ogImageMatch && ogImageMatch[1]) {
-              thumbnail = ogImageMatch[1];
-            }
-            
-            // Method 1: Find HD_SRC and SD_SRC in JavaScript
-            const hdMatch = html.match(/"hd_src":"([^"]+)"/);
-            const sdMatch = html.match(/"sd_src":"([^"]+)"/);
-            
-            if (hdMatch && hdMatch[1]) {
-              results.push({
-                quality: 'HD',
-                url: hdMatch[1].replace(/\\/g, '')
-              });
-            }
-            
-            if (sdMatch && sdMatch[1]) {
-              results.push({
-                quality: 'SD',
-                url: sdMatch[1].replace(/\\/g, '')
-              });
-            }
-            
-            // Method 2: Find video tags
-            const videoTagMatches = html.match(/<video[^>]*src="([^"]+)"[^>]*>/g);
-            if (videoTagMatches) {
-              for (const videoTag of videoTagMatches) {
-                const srcMatch = videoTag.match(/src="([^"]+)"/);
-                if (srcMatch && srcMatch[1]) {
-                  results.push({
-                    quality: 'Video Tag',
-                    url: srcMatch[1]
-                  });
-                }
-              }
-            }
-            
-            // Method 3: Look for FBQualityLabel
-            const qualityLabelMatches = html.match(/FBQualityLabel="([^"]+)"[^>]*src="([^"]+)"/g);
-            if (qualityLabelMatches) {
-              for (const match of qualityLabelMatches) {
-                const labelMatch = match.match(/FBQualityLabel="([^"]+)"/);
-                const srcMatch = match.match(/src="([^"]+)"/);
-                
-                if (labelMatch && labelMatch[1] && srcMatch && srcMatch[1]) {
-                  results.push({
-                    quality: labelMatch[1],
-                    url: srcMatch[1]
-                  });
-                }
-              }
-            }
-            
-            // Method 4: Look for og:video content
-            const ogVideoMatch = html.match(/<meta property="og:video:url" content="([^"]+)"/i);
-            if (ogVideoMatch && ogVideoMatch[1]) {
-              results.push({
-                quality: 'og:video',
-                url: ogVideoMatch[1]
-              });
-            }
-            
-            // Method 5: Look for og:video:secure_url content
-            const ogVideoSecureMatch = html.match(/<meta property="og:video:secure_url" content="([^"]+)"/i);
-            if (ogVideoSecureMatch && ogVideoSecureMatch[1]) {
-              results.push({
-                quality: 'og:video:secure',
-                url: ogVideoSecureMatch[1]
-              });
-            }
-            
-            if (results.length > 0) {
-              break; // Stop trying user agents if we found videos
-            }
-          } catch (error) {
-            console.error(`Error with user agent ${userAgent}:`, error);
-            continue;
           }
         }
-        
-        return { results, title, thumbnail };
       }
-      
-      const { results: videoUrls, title, thumbnail } = await extractVideoUrls(url);
-      
-      if (videoUrls.length === 0) {
-        throw new Error('No videos found on this Facebook page');
-      }
-      
-      // Remove duplicates
-      const uniqueUrls = [];
-      const seen = new Set();
-      
-      for (const video of videoUrls) {
-        if (!seen.has(video.url)) {
-          seen.add(video.url);
-          uniqueUrls.push(video);
+
+      // Method 3: Look for FBQualityLabel
+      const qualityLabelMatches = html.match(/FBQualityLabel="([^"]+)"[^>]*src="([^"]+)"/g);
+      if (qualityLabelMatches) {
+        for (const match of qualityLabelMatches) {
+          const labelMatch = match.match(/FBQualityLabel="([^"]+)"/);
+          const srcMatch = match.match(/src="([^"]+)"/);
+
+          if (labelMatch && labelMatch[1] && srcMatch && srcMatch[1]) {
+            results.push({
+              quality: labelMatch[1],
+              url: srcMatch[1]
+            });
+          }
         }
       }
-      
-      // Create format objects for each video
-      const formats = uniqueUrls.map((video, index) => {
-        return {
-          itag: `fb_${index}`,
-          quality: video.quality,
-          mimeType: 'video/mp4',
-          url: video.url,
-          hasAudio: true,
-          hasVideo: true,
-          contentLength: 0,
-          container: 'mp4'
-        };
-      });
-      
-      // Get direct URL for the highest quality video
-      let directUrl = '';
-      if (formats.length > 0) {
-        // Prefer HD quality if available
-        const hdFormat = formats.find(f => f.quality === 'HD' || f.quality.includes('720'));
-        directUrl = `/api/direct?url=${encodeURIComponent(hdFormat ? hdFormat.url : formats[0].url)}`;
+
+      // Method 4: Look for og:video content
+      const ogVideoMatch = html.match(/<meta property="og:video:url" content="([^"]+)"/i);
+      if (ogVideoMatch && ogVideoMatch[1]) {
+        results.push({
+          quality: 'og:video',
+          url: ogVideoMatch[1]
+        });
       }
-      
-      // Return the video info
-      return res.json({
-        title: title,
-        thumbnails: thumbnail ? [{ url: thumbnail, width: 480, height: 360 }] : [],
-        formats: formats,
-        platform: 'facebook',
-        mediaType: 'video',
-        directUrl: directUrl
-      });
-    } catch (manualError) {
-      console.error('Facebook manual extraction error:', manualError);
+
+      // Method 5: Look for og:video:secure_url content
+      const ogVideoSecureMatch = html.match(/<meta property="og:video:secure_url" content="([^"]+)"/i);
+      if (ogVideoSecureMatch && ogVideoSecureMatch[1]) {
+        results.push({
+          quality: 'og:video:secure',
+          url: ogVideoSecureMatch[1]
+        });
+      }
+
+      return results;
     }
-    
-    // Last resort fallback - direct link
-    res.json({
-      title: 'Facebook Video',
-      thumbnails: [{ url: 'https://via.placeholder.com/480x360.png?text=Facebook+Video', width: 480, height: 360 }],
-      formats: [{
-        itag: 'direct',
-        quality: 'Original',
+
+    // Try different user agents to bypass restrictions
+    let videoUrls = [];
+    let html = '';
+    let title = 'Facebook Video';
+    let thumbnail = '';
+
+    for (const userAgent of userAgents) {
+      try {
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': userAgent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+          },
+          timeout: 10000 // 10 second timeout
+        });
+
+        if (!response.ok) {
+          continue; // Try next user agent
+        }
+
+        html = await response.text();
+
+        // Extract title
+        const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+          title = titleMatch[1].replace(' | Facebook', '').trim();
+        }
+
+        // Extract thumbnail
+        const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+        if (ogImageMatch && ogImageMatch[1]) {
+          thumbnail = ogImageMatch[1];
+        }
+
+        // Extract video URLs
+        videoUrls = extractVideoUrls(html);
+
+        if (videoUrls.length > 0) {
+          break; // We found videos, stop trying different user agents
+        }
+      } catch (agentError) {
+        console.error(`Error with user agent ${userAgent}:`, agentError);
+        continue; // Try next user agent
+      }
+    }
+
+    // If no videos found through direct extraction, try youtube-dl as fallback
+    if (videoUrls.length === 0) {
+      console.log('No videos found through direct extraction, trying youtube-dl...');
+
+      try {
+        const info = await youtubeDl(url, {
+          dumpSingleJson: true,
+          noCheckCertificates: true,
+          noWarnings: true,
+          addHeader: ['referer:facebook.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+        });
+
+        if (info.formats && info.formats.length > 0) {
+          // Extract formats from youtube-dl
+          info.formats.forEach(format => {
+            if (format.url) {
+              let quality = 'Unknown';
+
+              if (format.format_note) {
+                quality = format.format_note;
+              } else if (format.height) {
+                quality = `${format.height}p`;
+              }
+
+              videoUrls.push({
+                quality: quality,
+                url: format.url
+              });
+            }
+          });
+
+          // Update title and thumbnail if available
+          if (info.title) title = info.title;
+          if (info.thumbnail) thumbnail = info.thumbnail;
+        }
+      } catch (ytdlError) {
+        console.error('youtube-dl fallback error:', ytdlError);
+      }
+    }
+
+    // If still no videos found, return error
+    if (videoUrls.length === 0) {
+      return res.status(404).json({
+        error: 'No videos found on this Facebook page',
+        details: 'This might be a private video or require login'
+      });
+    }
+
+    // Remove duplicates
+    const uniqueUrls = [];
+    const seen = new Set();
+
+    for (const video of videoUrls) {
+      if (!seen.has(video.url)) {
+        seen.add(video.url);
+        uniqueUrls.push(video);
+      }
+    }
+
+    // Create format objects for each video
+    const formats = uniqueUrls.map((video, index) => {
+      return {
+        itag: `fb_${index}`,
+        quality: video.quality,
         mimeType: 'video/mp4',
-        url: url,
+        url: video.url,
         hasAudio: true,
         hasVideo: true,
         contentLength: 0,
         container: 'mp4'
-      }],
+      };
+    });
+
+    // Get direct URL for the highest quality video
+    let directUrl = '';
+    if (formats.length > 0) {
+      // Prefer HD quality if available
+      const hdFormat = formats.find(f => f.quality === 'HD' || f.quality.includes('720'));
+      directUrl = `/api/direct?url=${encodeURIComponent(hdFormat ? hdFormat.url : formats[0].url)}`;
+    }
+
+    // Return the video info
+    res.json({
+      title: title,
+      thumbnails: thumbnail ? [{ url: thumbnail, width: 480, height: 360 }] : [],
+      formats: formats,
       platform: 'facebook',
       mediaType: 'video',
-      directUrl: url
+      directUrl: directUrl
     });
+
   } catch (error) {
     console.error('Facebook error:', error);
     res.status(500).json({ error: 'Facebook processing failed', details: error.message });
-  }
-});
-
-// YouTube improved endpoint that uses specialized handler
-app.get('/api/youtube', async (req, res) => {
-  try {
-    const { url } = req.query;
-
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
-
-    console.log(`Processing YouTube URL: ${url}`);
-
-    // Extract video ID
-    const videoId = extractYoutubeId(url);
-    if (!videoId) {
-      return res.status(400).json({ error: 'Could not extract YouTube video ID' });
-    }
-
-    try {
-      // First get some basic info about the video
-      const infoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-      const infoResponse = await fetch(infoUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-        }
-      });
-      
-      let title = `YouTube Video - ${videoId}`;
-      let description = '';
-      let thumbnail = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
-      
-      if (infoResponse.ok) {
-        const html = await infoResponse.text();
-        
-        // Extract title
-        const titleMatch = html.match(/<meta name="title" content="([^"]+)"/i);
-        if (titleMatch && titleMatch[1]) {
-          title = titleMatch[1];
-        }
-        
-        // Extract description
-        const descMatch = html.match(/<meta name="description" content="([^"]+)"/i);
-        if (descMatch && descMatch[1]) {
-          description = descMatch[1];
-        }
-      }
-
-      // Use reliable third-party services for download URLs
-      const directFormats = [
-        {
-          itag: 'yt_720p',
-          quality: '720p',
-          mimeType: 'video/mp4',
-          url: `https://pipedapi.kavin.rocks/streams/${videoId}`,
-          hasAudio: true,
-          hasVideo: true,
-          contentLength: 0,
-          container: 'mp4'
-        }
-      ];
-      
-      // Return basic info + direct links to external services
-      return res.json({
-        title: title,
-        description: description,
-        thumbnails: [
-          { url: thumbnail, width: 1280, height: 720 },
-          { url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, width: 480, height: 360 }
-        ],
-        formats: directFormats,
-        platform: 'youtube',
-        mediaType: 'video',
-        directUrl: `/api/youtube-redirect?id=${videoId}`
-      });
-    } catch (error) {
-      console.error('YouTube info extraction error:', error);
-      
-      // Return basic information
-      return res.json({
-        title: `YouTube Video - ${videoId}`,
-        thumbnails: [{ 
-          url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, 
-          width: 480, 
-          height: 360 
-        }],
-        formats: [{
-          itag: 'direct',
-          quality: 'Original',
-          mimeType: 'video/mp4',
-          url: `https://www.youtube.com/watch?v=${videoId}`,
-          hasAudio: true,
-          hasVideo: true,
-          contentLength: 0,
-          container: 'mp4'
-        }],
-        platform: 'youtube',
-        mediaType: 'video',
-        directUrl: `/api/youtube-redirect?id=${videoId}`
-      });
-    }
-  } catch (error) {
-    console.error('YouTube error:', error);
-    res.status(500).json({ error: 'YouTube processing failed', details: error.message });
-  }
-});
-
-// YouTube direct redirect - this is a special endpoint that uses a reliable third-party service
-app.get('/api/youtube-redirect', async (req, res) => {
-  const { id } = req.query;
-  
-  if (!id) {
-    return res.status(400).json({ error: 'YouTube video ID is required' });
-  }
-  
-  try {
-    // Try to get title for better filename suggestion
-    let title = `video_${id}`;
-    
-    try {
-      const infoUrl = `https://www.youtube.com/watch?v=${id}`;
-      const infoResponse = await fetch(infoUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-      });
-      
-      if (infoResponse.ok) {
-        const html = await infoResponse.text();
-        const titleMatch = html.match(/<meta name="title" content="([^"]+)"/i);
-        if (titleMatch && titleMatch[1]) {
-          title = titleMatch[1]
-            .replace(/[\/\\:*?"<>|]/g, '_')
-            .replace(/\s+/g, '_')
-            .substring(0, 100);
-        }
-      }
-    } catch (e) {
-      console.log('Error getting video title:', e);
-    }
-    
-    // Set a filename suggestion
-    res.setHeader('Content-Disposition', `attachment; filename="${title}.mp4"`);
-    
-    // Redirect to a reliable third-party download service
-    // y2mate is one of the most reliable YouTube downloaders
-    return res.redirect(`https://www.y2mate.com/youtube/${id}`);
-  } catch (error) {
-    console.error('YouTube redirect error:', error);
-    res.status(500).json({ error: 'YouTube redirect failed', details: error.message });
   }
 });
 
@@ -1129,40 +579,26 @@ app.get('/api/info', async (req, res) => {
     // Forward to platform-specific endpoints if available
     if (platform === 'pinterest') {
       // Use dedicated Pinterest endpoint
-      const response = await fetchWithTimeout(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
+      const response = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
       const data = await response.json();
       return res.json(data);
     }
     else if (platform === 'facebook') {
       // Use dedicated Facebook endpoint
-      const response = await fetchWithTimeout(`http://localhost:${PORT}/api/facebook?url=${encodeURIComponent(url)}`);
-      const data = await response.json();
-      return res.json(data);
-    }
-    else if (platform === 'instagram') {
-      // Use dedicated Instagram endpoint
-      const response = await fetchWithTimeout(`http://localhost:${PORT}/api/instagram?url=${encodeURIComponent(url)}`);
-      const data = await response.json();
-      return res.json(data);
-    }
-    else if (platform === 'youtube') {
-      // Use dedicated YouTube endpoint
-      const response = await fetchWithTimeout(`http://localhost:${PORT}/api/youtube?url=${encodeURIComponent(url)}`);
+      const response = await fetch(`http://localhost:${PORT}/api/facebook?url=${encodeURIComponent(url)}`);
       const data = await response.json();
       return res.json(data);
     }
 
     // For other platforms, use youtube-dl
     try {
+      // Use youtube-dl for all platforms since it supports most sites
       const info = await youtubeDl(url, {
         dumpSingleJson: true,
         noCheckCertificates: true,
         noWarnings: true,
         preferFreeFormats: true,
-        addHeader: [
-          'referer:' + new URL(url).origin, 
-          `user-agent:${getRandomUserAgent()}`
-        ]
+        addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
       });
 
       // Transform formats to match our API structure
@@ -1205,7 +641,7 @@ app.get('/api/info', async (req, res) => {
         });
 
       // Return video info and available formats
-      return res.json({
+      res.json({
         title: info.title || `${platform}_media_${Date.now()}`,
         thumbnails: info.thumbnails ? info.thumbnails.map(t => ({ url: t.url, width: t.width, height: t.height })) : [],
         duration: info.duration,
@@ -1214,8 +650,7 @@ app.get('/api/info', async (req, res) => {
         mediaType: mediaType,
         uploader: info.uploader || info.channel || null,
         uploadDate: info.upload_date || null,
-        description: info.description || null,
-        directUrl: formats.length > 0 ? `/api/direct?url=${encodeURIComponent(formats[0].url)}` : null
+        description: info.description || null
       });
     } catch (ytdlError) {
       console.error('youtube-dl error:', ytdlError);
@@ -1223,7 +658,7 @@ app.get('/api/info', async (req, res) => {
       // Fallback response for platforms youtube-dl can't handle
       const fallbackThumbnail = `https://via.placeholder.com/480x360.png?text=${encodeURIComponent(platform)}`;
 
-      return res.json({
+      res.json({
         title: `Media from ${platform}`,
         thumbnails: [{ url: fallbackThumbnail, width: 480, height: 360 }],
         duration: 0,
@@ -1240,8 +675,7 @@ app.get('/api/info', async (req, res) => {
         mediaType: mediaType,
         uploader: null,
         uploadDate: null,
-        description: null,
-        directUrl: url
+        description: null
       });
     }
 
@@ -1251,7 +685,29 @@ app.get('/api/info', async (req, res) => {
   }
 });
 
-// Download endpoint - improved with direct external service redirects for Pinterest and YouTube
+// YouTube info endpoint (kept for compatibility)
+app.get('/api/youtube', async (req, res) => {
+  try {
+    const url = req.query.url;
+
+    if (!url) {
+      return res.status(400).json({ error: 'URL is required' });
+    }
+
+    console.log(`Processing YouTube URL: ${url}`);
+
+    // Forward to universal endpoint
+    const response = await fetch(`http://localhost:${PORT}/api/info?url=${encodeURIComponent(url)}`);
+    const data = await response.json();
+    res.json(data);
+
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
+
+// Download endpoint
 app.get('/api/download', async (req, res) => {
   try {
     const { url, itag } = req.query;
@@ -1261,73 +717,9 @@ app.get('/api/download', async (req, res) => {
     }
 
     console.log(`Processing download - URL: ${url}, format: ${itag || 'best'}`);
-    
-    // Pinterest handling - direct browser redirect to source media
-    if (url.includes('pinterest.com')) {
-      console.log('Pinterest URL detected, using direct source redirect');
-      
-      try {
-        // Get Pinterest info first to extract the actual media URL
-        const pinterestResponse = await fetchWithTimeout(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
-        
-        if (!pinterestResponse.ok) {
-          throw new Error(`Failed to get Pinterest info: ${pinterestResponse.status}`);
-        }
-        
-        const pinterestData = await pinterestResponse.json();
-        
-        // Get the best format URL
-        if (!pinterestData.formats || pinterestData.formats.length === 0) {
-          throw new Error('No media formats found in Pinterest response');
-        }
-        
-        // Get the direct media URL - use the first format which should be the highest quality
-        const directMediaUrl = pinterestData.formats[0].url;
-        const isVideo = pinterestData.mediaType === 'video';
-        const extension = isVideo ? '.mp4' : '.jpg';
-        
-        // Set content disposition to force download with filename suggestion
-        res.setHeader('Content-Disposition', `attachment; filename="pinterest_media${extension}"`);
-        
-        // Direct redirect to the media URL - this bypasses our server processing entirely
-        // which ensures no corruption of the media file
-        console.log(`Redirecting directly to Pinterest media: ${directMediaUrl}`);
-        return res.redirect(directMediaUrl);
-      } catch (pinterestError) {
-        console.error('Pinterest direct download error:', pinterestError);
-        
-        // If info extraction fails, redirect to original URL
-        console.log('Redirecting to original Pinterest URL');
-        return res.redirect(url);
-      }
-    }
-    
-    // YouTube handling - redirect to third-party service
-    if (url.includes('youtube.com') || url.includes('youtu.be')) {
-      console.log('YouTube URL detected, redirecting to reliable download service');
-      
-      try {
-        // Extract video ID from URL
-        const videoId = extractYoutubeId(url);
-        
-        if (!videoId) {
-          throw new Error('Could not extract YouTube video ID');
-        }
-        
-        // Redirect to our YouTube redirect endpoint
-        return res.redirect(`/api/youtube-redirect?id=${videoId}`);
-      } catch (youtubeError) {
-        console.error('YouTube redirect error:', youtubeError);
-        
-        // If extraction fails, redirect to original URL
-        console.log('Redirecting to original YouTube URL');
-        return res.redirect(url);
-      }
-    }
 
-    // For other platforms, use youtube-dl
     // Generate a unique filename
-    const uniqueId = uuidv4();
+    const uniqueId = Date.now();
     const tempFilePath = path.join(TEMP_DIR, `download-${uniqueId}.mp4`);
 
     // Download options
@@ -1336,10 +728,7 @@ app.get('/api/download', async (req, res) => {
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
-      addHeader: [
-        'referer:' + new URL(url).origin, 
-        `user-agent:${getRandomUserAgent()}`
-      ]
+      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
     };
 
     // If format is specified, use it
@@ -1356,10 +745,9 @@ app.get('/api/download', async (req, res) => {
       // For very troublesome sites, try a direct fetch approach
       if (!fs.existsSync(tempFilePath)) {
         console.log('Attempting direct download as fallback...');
-        
         const downloadResponse = await fetch(url, {
           headers: {
-            'User-Agent': getRandomUserAgent(),
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
             'Referer': new URL(url).origin
           }
         });
@@ -1409,13 +797,7 @@ app.get('/api/download', async (req, res) => {
 
   } catch (error) {
     console.error('Download error:', error);
-    
-    // As a last resort, redirect to the direct endpoint
-    if (url) {
-      return res.redirect(`/api/direct?url=${encodeURIComponent(url)}`);
-    } else {
-      res.status(500).json({ error: 'Download failed', details: error.message });
-    }
+    res.status(500).json({ error: 'Download failed', details: error.message });
   }
 });
 
@@ -1430,57 +812,8 @@ app.get('/api/audio', async (req, res) => {
 
     console.log(`Processing audio download - URL: ${url}, format: ${itag || 'best audio'}`);
 
-    // If YouTube, redirect to a reliable audio download service
-    if (url.includes('youtube.com') || url.includes('youtu.be')) {
-      console.log('YouTube URL detected, redirecting to audio download service');
-      
-      try {
-        // Extract video ID
-        const videoId = extractYoutubeId(url);
-        
-        if (!videoId) {
-          throw new Error('Could not extract YouTube video ID');
-        }
-        
-        // Set audio filename
-        let title = `audio_${videoId}`;
-        
-        try {
-          const infoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-          const infoResponse = await fetch(infoUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-          });
-          
-          if (infoResponse.ok) {
-            const html = await infoResponse.text();
-            const titleMatch = html.match(/<meta name="title" content="([^"]+)"/i);
-            if (titleMatch && titleMatch[1]) {
-              title = titleMatch[1]
-                .replace(/[\/\\:*?"<>|]/g, '_')
-                .replace(/\s+/g, '_')
-                .substring(0, 100);
-            }
-          }
-        } catch (e) {
-          console.log('Error getting video title:', e);
-        }
-        
-        // Set filename suggestion
-        res.setHeader('Content-Disposition', `attachment; filename="${title}.mp3"`);
-        
-        // Redirect to a reliable MP3 converter service
-        return res.redirect(`https://www.y2mate.com/youtube-mp3/${videoId}`);
-      } catch (youtubeError) {
-        console.error('YouTube audio redirect error:', youtubeError);
-        
-        // Fall through to youtube-dl method if extraction fails
-      }
-    }
-
     // Generate a unique filename
-    const uniqueId = uuidv4();
+    const uniqueId = Date.now();
     const tempFilePath = path.join(TEMP_DIR, `audio-${uniqueId}.mp3`);
 
     // Download options specific for audio
@@ -1492,10 +825,7 @@ app.get('/api/audio', async (req, res) => {
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
-      addHeader: [
-        'referer:' + new URL(url).origin, 
-        `user-agent:${getRandomUserAgent()}`
-      ]
+      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
     };
 
     // If format is specified, use it
@@ -1520,7 +850,7 @@ app.get('/api/audio', async (req, res) => {
 
     // Check if file exists
     if (!fs.existsSync(tempFilePath)) {
-      throw new Error('Audio download failed - file not created');
+      throw new Error('Download failed - file not created');
     }
 
     // Get file info
@@ -1559,95 +889,91 @@ app.get('/api/direct', async (req, res) => {
 
     console.log(`Processing direct download: ${url}`);
 
-    // For Pinterest or YouTube URLs, redirect to their specialized handlers
-    if (url.includes('pinterest.com')) {
-      return res.redirect(`/api/download?url=${encodeURIComponent(url)}`);
-    }
-    
-    if (url.includes('youtube.com') || url.includes('youtu.be')) {
-      return res.redirect(`/api/download?url=${encodeURIComponent(url)}`);
-    }
+    // Prepare headers with a rotation of user agents to avoid blocking
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+    ];
 
-    // For all other URLs, try a direct browser redirect first
-    // This prevents any corruption of the file that might happen through our server
-    try {
-      // Set suggested filename if provided
-      if (filename) {
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      }
-      
-      // Simply redirect to the source URL for direct browser download
-      // This is the most reliable method for most media files
-      console.log(`Redirecting browser directly to: ${url}`);
-      return res.redirect(url);
-    } catch (redirectError) {
-      console.error('Direct redirect failed, falling back to proxy:', redirectError);
-      // Continue to proxy method
-    }
-    
-    // As a fallback, try to proxy the download through our server
-    try {
-      // Prepare headers with a random user agent
-      const headers = {
-        'User-Agent': getRandomUserAgent(),
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': new URL(url).origin,
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-      };
+    const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
 
-      // Try to fetch the content
-      const response = await fetchWithTimeout(url, {
+    const headers = {
+      'User-Agent': randomUserAgent,
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Referer': new URL(url).origin,
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+    };
+
+    // Try to determine content type first with HEAD request
+    let contentType = 'application/octet-stream';
+    let contentLength = 0;
+
+    try {
+      const headResponse = await fetch(url, {
+        method: 'HEAD',
         headers,
-        redirect: 'follow',
-        timeout: 30000 // 30 second timeout
+        redirect: 'follow'
+      });
+
+      if (headResponse.ok) {
+        contentType = headResponse.headers.get('content-type') || 'application/octet-stream';
+        contentLength = headResponse.headers.get('content-length') || 0;
+      }
+    } catch (headError) {
+      console.log('HEAD request failed, continuing anyway:', headError.message);
+    }
+
+    // Determine filename if not provided
+    let outputFilename = filename || 'download';
+
+    // Add extension based on content type if not present
+    if (!outputFilename.includes('.')) {
+      if (contentType.includes('video')) {
+        outputFilename += '.mp4';
+      } else if (contentType.includes('audio')) {
+        outputFilename += '.mp3';
+      } else if (contentType.includes('image')) {
+        if (contentType.includes('png')) {
+          outputFilename += '.png';
+        } else if (contentType.includes('gif')) {
+          outputFilename += '.gif';
+        } else if (contentType.includes('webp')) {
+          outputFilename += '.webp';
+        } else {
+          outputFilename += '.jpg';
+        }
+      } else if (contentType.includes('pdf')) {
+        outputFilename += '.pdf';
+      } else {
+        outputFilename += '.bin';
+      }
+    }
+
+    // Try to fetch the content
+    try {
+      const response = await fetch(url, {
+        headers,
+        redirect: 'follow'
       });
 
       if (!response.ok) {
         throw new Error(`Failed to fetch content: ${response.status} ${response.statusText}`);
       }
 
-      // Determine filename if not provided
-      let outputFilename = filename || 'download';
-
       // Update content type if it's available from the actual response
-      const contentType = response.headers.get('content-type') || 'application/octet-stream';
-      
-      // Add extension based on content type if not present
-      if (!outputFilename.includes('.')) {
-        if (contentType.includes('video')) {
-          outputFilename += '.mp4';
-        } else if (contentType.includes('audio')) {
-          outputFilename += '.mp3';
-        } else if (contentType.includes('image')) {
-          if (contentType.includes('png')) {
-            outputFilename += '.png';
-          } else if (contentType.includes('gif')) {
-            outputFilename += '.gif';
-          } else if (contentType.includes('webp')) {
-            outputFilename += '.webp';
-          } else {
-            outputFilename += '.jpg';
-          }
-        } else if (contentType.includes('pdf')) {
-          outputFilename += '.pdf';
-        } else {
-          outputFilename += '.bin';
-        }
-      }
+      contentType = response.headers.get('content-type') || contentType;
 
       // Set response headers
       res.setHeader('Content-Type', contentType);
-      
-      const contentLength = response.headers.get('content-length');
-      if (contentLength) {
+      if (contentLength > 0) {
         res.setHeader('Content-Length', contentLength);
       }
-      
       res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
 
-      // Pipe the response directly to the client without any processing
+      // Pipe the response to the client
       response.body.pipe(res);
     } catch (fetchError) {
       throw new Error(`Failed to download: ${fetchError.message}`);
@@ -1662,19 +988,6 @@ app.get('/api/direct', async (req, res) => {
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Server accessible at http://localhost:${PORT}`);
+  console.log(`Server accessible at http://localhost:${PORT} and http://192.168.1.136:${PORT}`);
   console.log(`Temporary directory: ${TEMP_DIR}`);
-  console.log('Supported platforms: YouTube, Facebook, Instagram, TikTok, Twitter, Pinterest, and more');
-});
-
-// Clean up temp files on exit
-process.on('exit', () => {
-  try {
-    const files = fs.readdirSync(TEMP_DIR);
-    for (const file of files) {
-      fs.unlinkSync(path.join(TEMP_DIR, file));
-    }
-  } catch (err) {
-    console.error('Error cleaning up temp directory:', err);
-  }
 });
