@@ -1,4 +1,4 @@
-// server.js - Simplified version using only existing dependencies
+// server.js - Comprehensive solution with enhanced platform support
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -14,6 +14,9 @@ const { TwitterScraper } = require('@yimura/scraper');
 const { Stream } = require('stream');
 const { promisify } = require('util');
 const pipeline = promisify(Stream.pipeline);
+const urlParser = require('url');
+const axios = require('axios');
+const redditFetch = require('reddit-fetch');
 
 // For node-fetch (ESM module)
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
@@ -31,16 +34,36 @@ if (!fs.existsSync(TEMP_DIR)) {
 app.use(cors());
 app.use(express.json());
 
+// Configure axios
+axios.defaults.timeout = 30000;
+axios.defaults.headers.common['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
+
 // Increase timeout for external requests
 http.globalAgent.maxSockets = 25;
 https.globalAgent.maxSockets = 25;
 http.globalAgent.keepAlive = true;
 https.globalAgent.keepAlive = true;
 
+// Collection of User Agents for bypassing restrictions
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.45 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36'
+];
+
 // Routes
 app.get('/', (req, res) => {
   res.send('Media Downloader API is running');
 });
+
+// HELPER FUNCTIONS
+
+// Get random User Agent
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
 
 // Enhanced platform detection
 function detectPlatform(url) {
@@ -117,6 +140,65 @@ function getMediaType(platform) {
   }
 }
 
+// Helper: Get webpage content with retry mechanism
+async function getWebpageContent(url, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const userAgent = getRandomUserAgent();
+      const response = await axios.get(url, {
+        headers: {
+          'User-Agent': userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
+        timeout: 10000
+      });
+      
+      return response.data;
+    } catch (error) {
+      console.error(`Attempt ${i+1} failed for ${url}:`, error.message);
+      if (i === retries - 1) throw error;
+    }
+  }
+}
+
+// Helper: Extract title from HTML
+function extractTitleFromHtml(html) {
+  const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
+  return titleMatch ? titleMatch[1].trim() : null;
+}
+
+// Helper: Extract meta tags from HTML
+function extractMetaTags(html) {
+  const metaTags = {};
+  
+  // OG tags
+  const ogTitleMatch = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"[^>]*>/i);
+  const ogImageMatch = html.match(/<meta[^>]*property="og:image"[^>]*content="([^"]*)"[^>]*>/i);
+  const ogVideoMatch = html.match(/<meta[^>]*property="og:video"[^>]*content="([^"]*)"[^>]*>/i);
+  const ogVideoUrlMatch = html.match(/<meta[^>]*property="og:video:url"[^>]*content="([^"]*)"[^>]*>/i);
+  const ogDescriptionMatch = html.match(/<meta[^>]*property="og:description"[^>]*content="([^"]*)"[^>]*>/i);
+  
+  if (ogTitleMatch) metaTags.ogTitle = ogTitleMatch[1];
+  if (ogImageMatch) metaTags.ogImage = ogImageMatch[1];
+  if (ogVideoMatch) metaTags.ogVideo = ogVideoMatch[1];
+  if (ogVideoUrlMatch) metaTags.ogVideoUrl = ogVideoUrlMatch[1];
+  if (ogDescriptionMatch) metaTags.ogDescription = ogDescriptionMatch[1];
+  
+  // Twitter tags
+  const twitterImageMatch = html.match(/<meta[^>]*name="twitter:image"[^>]*content="([^"]*)"[^>]*>/i);
+  const twitterTitleMatch = html.match(/<meta[^>]*name="twitter:title"[^>]*content="([^"]*)"[^>]*>/i);
+  
+  if (twitterImageMatch) metaTags.twitterImage = twitterImageMatch[1];
+  if (twitterTitleMatch) metaTags.twitterTitle = twitterTitleMatch[1];
+  
+  return metaTags;
+}
+
+// PLATFORM-SPECIFIC HANDLERS
+
 // Get YouTube video info using ytdl-core
 async function getYouTubeInfo(url) {
   try {
@@ -164,7 +246,49 @@ async function getYouTubeInfo(url) {
     };
   } catch (error) {
     console.error('YouTube info error:', error);
-    throw new Error(`Failed to get YouTube info: ${error.message}`);
+    
+    // Fallback to youtube-dl
+    try {
+      console.log('Falling back to youtube-dl for YouTube...');
+      const info = await youtubeDl(url, {
+        dumpSingleJson: true,
+        noCheckCertificates: true,
+        noWarnings: true,
+        preferFreeFormats: true,
+        addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
+      });
+      
+      // Transform formats
+      const formats = info.formats.map(format => ({
+        itag: `ytdl_${format.format_id}`,
+        quality: format.format_note || format.format,
+        mimeType: format.ext ? `video/${format.ext}` : 'video/mp4',
+        url: format.url,
+        hasAudio: format.acodec !== 'none',
+        hasVideo: format.vcodec !== 'none',
+        contentLength: format.filesize || 0,
+        container: format.ext || 'mp4'
+      }));
+      
+      return {
+        title: info.title,
+        thumbnails: info.thumbnails ? info.thumbnails.map(t => ({ 
+          url: t.url,
+          width: t.width || 0,
+          height: t.height || 0
+        })) : [{url: info.thumbnail, width: 0, height: 0}],
+        duration: info.duration,
+        formats: formats,
+        platform: 'youtube',
+        mediaType: 'video',
+        uploader: info.uploader,
+        uploadDate: info.upload_date,
+        description: info.description
+      };
+    } catch (ytdlError) {
+      console.error('YouTube youtube-dl fallback error:', ytdlError);
+      throw new Error(`Failed to get YouTube info: ${error.message}`);
+    }
   }
 }
 
@@ -237,7 +361,45 @@ async function getTikTokInfo(url) {
     };
   } catch (error) {
     console.error('TikTok info error:', error);
-    throw new Error(`Failed to get TikTok info: ${error.message}`);
+    
+    // Fallback to youtube-dl
+    try {
+      console.log('Falling back to youtube-dl for TikTok...');
+      const info = await youtubeDl(url, {
+        dumpSingleJson: true,
+        noCheckCertificates: true,
+        noWarnings: true,
+        preferFreeFormats: true,
+        addHeader: ['referer:tiktok.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
+      });
+      
+      // Transform formats
+      const formats = info.formats.map(format => ({
+        itag: `tiktok_ytdl_${format.format_id}`,
+        quality: format.format_note || format.format,
+        mimeType: format.ext ? `video/${format.ext}` : 'video/mp4',
+        url: format.url,
+        hasAudio: format.acodec !== 'none',
+        hasVideo: format.vcodec !== 'none',
+        contentLength: format.filesize || 0,
+        container: format.ext || 'mp4'
+      }));
+      
+      return {
+        title: info.title || 'TikTok Video',
+        thumbnails: [{ url: info.thumbnail || '', width: 0, height: 0 }],
+        duration: info.duration || 0,
+        formats: formats,
+        platform: 'tiktok',
+        mediaType: 'video',
+        uploader: info.uploader || 'TikTok User',
+        uploadDate: info.upload_date || null,
+        description: info.description || ''
+      };
+    } catch (ytdlError) {
+      console.error('TikTok youtube-dl fallback error:', ytdlError);
+      throw new Error(`Failed to get TikTok info: ${error.message}`);
+    }
   }
 }
 
@@ -335,7 +497,7 @@ async function getTwitterInfo(url) {
           noCheckCertificates: true,
           noWarnings: true,
           preferFreeFormats: true,
-          addHeader: ['referer:twitter.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+          addHeader: ['referer:twitter.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
         });
         
         if (info.formats && info.formats.length > 0) {
@@ -384,7 +546,7 @@ async function getTwitterInfo(url) {
         noCheckCertificates: true,
         noWarnings: true,
         preferFreeFormats: true,
-        addHeader: ['referer:twitter.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+        addHeader: ['referer:twitter.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
       });
       
       // Transform formats
@@ -479,7 +641,7 @@ async function getInstagramInfo(url) {
         noCheckCertificates: true,
         noWarnings: true,
         preferFreeFormats: true,
-        addHeader: ['referer:instagram.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+        addHeader: ['referer:instagram.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
       });
       
       // Transform formats
@@ -564,42 +726,146 @@ async function getFacebookVideoInfo(url) {
   } catch (error) {
     console.error('Facebook info error:', error);
     
-    // Try youtube-dl as fallback
+    // Fallback to direct webpage scraping
     try {
-      console.log('Trying youtube-dl as fallback for Facebook...');
-      const info = await youtubeDl(url, {
-        dumpSingleJson: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        preferFreeFormats: true,
-        addHeader: ['referer:facebook.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
-      });
+      console.log('Trying direct scraping for Facebook...');
+      let html = '';
       
-      // Transform formats
-      const formats = info.formats.map(format => ({
-        itag: `fb_ytdl_${format.format_id}`,
-        quality: format.format_note || format.format,
-        mimeType: format.ext ? `video/${format.ext}` : 'video/mp4',
-        url: format.url,
-        hasAudio: format.acodec !== 'none',
-        hasVideo: format.vcodec !== 'none',
-        contentLength: format.filesize || 0,
-        container: format.ext || 'mp4'
+      // Try different user agents
+      for (const userAgent of USER_AGENTS) {
+        try {
+          const response = await axios.get(url, {
+            headers: {
+              'User-Agent': userAgent,
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.5',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache',
+            },
+            timeout: 10000
+          });
+          
+          html = response.data;
+          break;
+        } catch (reqError) {
+          console.error(`Error with user agent ${userAgent}:`, reqError.message);
+        }
+      }
+      
+      if (!html) {
+        throw new Error('Could not fetch Facebook page');
+      }
+      
+      // Extract title
+      let title = 'Facebook Video';
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch && titleMatch[1]) {
+        title = titleMatch[1].replace(' | Facebook', '').trim();
+      }
+      
+      // Extract thumbnail
+      let thumbnail = '';
+      const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+      if (ogImageMatch && ogImageMatch[1]) {
+        thumbnail = ogImageMatch[1];
+      }
+      
+      // Extract video URLs
+      const videoUrls = [];
+      
+      // HD URL
+      const hdMatch = html.match(/"hd_src":"([^"]+)"/);
+      if (hdMatch && hdMatch[1]) {
+        videoUrls.push({
+          quality: 'HD',
+          url: hdMatch[1].replace(/\\/g, '')
+        });
+      }
+      
+      // SD URL
+      const sdMatch = html.match(/"sd_src":"([^"]+)"/);
+      if (sdMatch && sdMatch[1]) {
+        videoUrls.push({
+          quality: 'SD',
+          url: sdMatch[1].replace(/\\/g, '')
+        });
+      }
+      
+      // OG Video
+      const ogVideoMatch = html.match(/<meta property="og:video:url" content="([^"]+)"/i);
+      if (ogVideoMatch && ogVideoMatch[1]) {
+        videoUrls.push({
+          quality: 'OG Video',
+          url: ogVideoMatch[1]
+        });
+      }
+      
+      if (videoUrls.length === 0) {
+        throw new Error('No video URLs found in Facebook page');
+      }
+      
+      // Create formats array
+      const formats = videoUrls.map((video, index) => ({
+        itag: `fb_scrape_${index}`,
+        quality: video.quality,
+        mimeType: 'video/mp4',
+        url: video.url,
+        hasAudio: true,
+        hasVideo: true,
+        contentLength: 0,
+        container: 'mp4'
       }));
       
       return {
-        title: info.title || 'Facebook Video',
-        thumbnails: info.thumbnail ? [{ url: info.thumbnail, width: 0, height: 0 }] : [],
+        title: title,
+        thumbnails: thumbnail ? [{ url: thumbnail, width: 0, height: 0 }] : [],
         formats: formats,
         platform: 'facebook',
         mediaType: 'video',
-        uploader: info.uploader || 'Facebook User',
+        uploader: null,
         uploadDate: null,
-        description: info.description || ''
+        description: title
       };
-    } catch (ytdlError) {
-      console.error('Facebook youtube-dl fallback error:', ytdlError);
-      throw new Error(`Failed to get Facebook info: ${error.message}`);
+    } catch (scrapeError) {
+      console.error('Facebook direct scraping fallback error:', scrapeError);
+      
+      // Try youtube-dl as final fallback
+      try {
+        console.log('Trying youtube-dl as fallback for Facebook...');
+        const info = await youtubeDl(url, {
+          dumpSingleJson: true,
+          noCheckCertificates: true,
+          noWarnings: true,
+          preferFreeFormats: true,
+          addHeader: ['referer:facebook.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
+        });
+        
+        // Transform formats
+        const formats = info.formats.map(format => ({
+          itag: `fb_ytdl_${format.format_id}`,
+          quality: format.format_note || format.format,
+          mimeType: format.ext ? `video/${format.ext}` : 'video/mp4',
+          url: format.url,
+          hasAudio: format.acodec !== 'none',
+          hasVideo: format.vcodec !== 'none',
+          contentLength: format.filesize || 0,
+          container: format.ext || 'mp4'
+        }));
+        
+        return {
+          title: info.title || 'Facebook Video',
+          thumbnails: info.thumbnail ? [{ url: info.thumbnail, width: 0, height: 0 }] : [],
+          formats: formats,
+          platform: 'facebook',
+          mediaType: 'video',
+          uploader: info.uploader || 'Facebook User',
+          uploadDate: null,
+          description: info.description || ''
+        };
+      } catch (ytdlError) {
+        console.error('Facebook youtube-dl fallback error:', ytdlError);
+        throw new Error(`Failed to get Facebook info: ${error.message}`);
+      }
     }
   }
 }
@@ -607,23 +873,8 @@ async function getFacebookVideoInfo(url) {
 // Get Threads media info (using basic scraping)
 async function getThreadsInfo(url) {
   try {
-    // User agent
-    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
-    
     // Get the page HTML
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': userAgent,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5'
-      }
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Failed to fetch Threads page: ${response.status} ${response.statusText}`);
-    }
-    
-    const html = await response.text();
+    const html = await getWebpageContent(url);
     
     // Extract title
     let title = 'Threads Post';
@@ -632,19 +883,18 @@ async function getThreadsInfo(url) {
       title = titleMatch[1].replace(' | Threads', '').trim();
     }
     
+    // Extract meta tags
+    const metaTags = extractMetaTags(html);
+    
     // Find media from Open Graph tags
     let mediaUrl = null;
     let mediaType = 'image';
     
-    const ogVideoMatch = html.match(/<meta property="og:video" content="([^"]+)"/i);
-    const ogVideoUrlMatch = html.match(/<meta property="og:video:url" content="([^"]+)"/i);
-    const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
-    
-    if (ogVideoMatch || ogVideoUrlMatch) {
+    if (metaTags.ogVideo || metaTags.ogVideoUrl) {
       mediaType = 'video';
-      mediaUrl = (ogVideoMatch && ogVideoMatch[1]) || (ogVideoUrlMatch && ogVideoUrlMatch[1]);
-    } else if (ogImageMatch) {
-      mediaUrl = ogImageMatch[1];
+      mediaUrl = metaTags.ogVideo || metaTags.ogVideoUrl;
+    } else if (metaTags.ogImage) {
+      mediaUrl = metaTags.ogImage;
     }
     
     // Find additional media in page source
@@ -728,6 +978,58 @@ async function getThreadsInfo(url) {
     }
     
     if (formats.length === 0) {
+      // Try youtube-dl as fallback
+      try {
+        console.log('Trying youtube-dl as fallback for Threads...');
+        const info = await youtubeDl(url, {
+          dumpSingleJson: true,
+          noCheckCertificates: true,
+          noWarnings: true,
+          preferFreeFormats: true,
+          addHeader: ['referer:threads.net', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
+        });
+        
+        // Check if youtube-dl found media
+        if (info.formats && info.formats.length > 0) {
+          mediaType = info.formats.some(f => f.vcodec !== 'none') ? 'video' : 'image';
+          
+          // Transform formats
+          info.formats.forEach((format, index) => {
+            formats.push({
+              itag: `threads_ytdl_${index}`,
+              quality: format.format_note || `Quality ${index + 1}`,
+              mimeType: format.ext ? (mediaType === 'video' ? `video/${format.ext}` : `image/${format.ext}`) : 'video/mp4',
+              url: format.url,
+              hasAudio: format.acodec !== 'none',
+              hasVideo: format.vcodec !== 'none',
+              contentLength: format.filesize || 0,
+              container: format.ext || 'mp4'
+            });
+          });
+        } else if (info.url) {
+          // If just a direct URL
+          formats.push({
+            itag: 'threads_ytdl_direct',
+            quality: 'Original',
+            mimeType: mediaType === 'video' ? 'video/mp4' : 'image/jpeg',
+            url: info.url,
+            hasAudio: mediaType === 'video',
+            hasVideo: mediaType === 'video',
+            contentLength: 0,
+            container: mediaType === 'video' ? 'mp4' : 'jpeg'
+          });
+        }
+        
+        // Update title if available
+        if (info.title) {
+          title = info.title;
+        }
+      } catch (ytdlError) {
+        console.error('Threads youtube-dl fallback error:', ytdlError);
+      }
+    }
+    
+    if (formats.length === 0) {
       throw new Error('No media found in this Threads post');
     }
     
@@ -739,7 +1041,7 @@ async function getThreadsInfo(url) {
       mediaType: mediaType,
       uploader: null,
       uploadDate: null,
-      description: title
+      description: metaTags.ogDescription || title
     };
   } catch (error) {
     console.error('Threads error:', error);
@@ -754,21 +1056,7 @@ async function getPinterestInfo(url) {
     const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
 
     // First, get the actual page to find image data
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': userAgent,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch Pinterest page: ${response.status} ${response.statusText}`);
-    }
-
-    const html = await response.text();
+    const html = await getWebpageContent(url);
 
     // Extract title
     let title = 'Pinterest Image';
@@ -878,7 +1166,7 @@ async function getPinterestInfo(url) {
           noCheckCertificates: true,
           noWarnings: true,
           preferFreeFormats: true,
-          addHeader: ['referer:pinterest.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+          addHeader: ['referer:pinterest.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
         });
         
         if (info.formats && info.formats.length > 0) {
@@ -940,6 +1228,280 @@ async function getPinterestInfo(url) {
     throw new Error(`Pinterest processing failed: ${error.message}`);
   }
 }
+
+// Get Reddit media info
+async function getRedditInfo(url) {
+  try {
+    // Check if it's a reddit post URL
+    const redditMatch = url.match(/reddit\.com\/r\/([^\/]+)\/comments\/([^\/]+)/);
+    if (!redditMatch) {
+      throw new Error('Not a valid Reddit post URL');
+    }
+    
+    // Extract subreddit and post ID
+    const subreddit = redditMatch[1];
+    const postId = redditMatch[2];
+    
+    // Try using reddit-fetch
+    try {
+      const data = await redditFetch({
+        subreddit: subreddit,
+        id: postId,
+        sort: 'top'
+      });
+      
+      if (!data || data.error) {
+        throw new Error('Failed to fetch Reddit post');
+      }
+      
+      // Check if post has media
+      let mediaUrl = null;
+      let mediaType = 'text';
+      
+      // Create formats array
+      const formats = [];
+      
+      // Check for video
+      if (data.media && data.media.reddit_video) {
+        mediaUrl = data.media.reddit_video.fallback_url;
+        mediaType = 'video';
+        
+        // Add video format
+        formats.push({
+          itag: 'reddit_video',
+          quality: `${data.media.reddit_video.height}p`,
+          mimeType: 'video/mp4',
+          url: mediaUrl,
+          hasAudio: false, // Reddit videos often don't have audio
+          hasVideo: true,
+          contentLength: 0,
+          container: 'mp4'
+        });
+        
+        // Try to find audio URL (Reddit stores audio separately)
+        const audioUrl = mediaUrl.replace(/DASH_\d+\.mp4/, 'DASH_audio.mp4');
+        
+        // Add audio format
+        formats.push({
+          itag: 'reddit_audio',
+          quality: 'Audio Only',
+          mimeType: 'audio/mp4',
+          url: audioUrl,
+          hasAudio: true,
+          hasVideo: false,
+          contentLength: 0,
+          container: 'mp4'
+        });
+      }
+      // Check for image
+      else if (data.url_overridden_by_dest) {
+        mediaUrl = data.url_overridden_by_dest;
+        
+        // Determine type based on URL
+        if (mediaUrl.match(/\.(jpg|jpeg|png|gif)(\?|$)/i)) {
+          mediaType = 'image';
+          
+          // Get extension
+          const match = mediaUrl.match(/\.(jpg|jpeg|png|gif)(\?|$)/i);
+          const ext = match ? match[1].toLowerCase() : 'jpg';
+          
+          // Add image format
+          formats.push({
+            itag: 'reddit_image',
+            quality: 'Original',
+            mimeType: `image/${ext}`,
+            url: mediaUrl,
+            hasAudio: false,
+            hasVideo: false,
+            contentLength: 0,
+            container: ext
+          });
+        }
+        else if (mediaUrl.match(/\.(mp4|webm)(\?|$)/i)) {
+          mediaType = 'video';
+          
+          // Get extension
+          const match = mediaUrl.match(/\.(mp4|webm)(\?|$)/i);
+          const ext = match ? match[1].toLowerCase() : 'mp4';
+          
+          // Add video format
+          formats.push({
+            itag: 'reddit_video',
+            quality: 'Original',
+            mimeType: `video/${ext}`,
+            url: mediaUrl,
+            hasAudio: true,
+            hasVideo: true,
+            contentLength: 0,
+            container: ext
+          });
+        }
+      }
+      
+      // If no media found but there's a thumbnail, use that
+      if (formats.length === 0 && data.thumbnail && data.thumbnail.startsWith('http')) {
+        mediaType = 'image';
+        mediaUrl = data.thumbnail;
+        
+        formats.push({
+          itag: 'reddit_thumbnail',
+          quality: 'Thumbnail',
+          mimeType: 'image/jpeg',
+          url: mediaUrl,
+          hasAudio: false,
+          hasVideo: false,
+          contentLength: 0,
+          container: 'jpeg'
+        });
+      }
+      
+      // Return media info
+      return {
+        title: data.title || 'Reddit Post',
+        thumbnails: data.thumbnail && data.thumbnail.startsWith('http') ? 
+                  [{ url: data.thumbnail, width: 0, height: 0 }] : [],
+        formats: formats,
+        platform: 'reddit',
+        mediaType: mediaType,
+        uploader: data.author,
+        uploadDate: new Date(data.created_utc * 1000).toISOString().split('T')[0],
+        description: data.selftext || ''
+      };
+    } catch (redditError) {
+      console.error('Reddit fetch error:', redditError);
+      
+      // Try youtube-dl as fallback
+      try {
+        console.log('Trying youtube-dl as fallback for Reddit...');
+        const info = await youtubeDl(url, {
+          dumpSingleJson: true,
+          noCheckCertificates: true,
+          noWarnings: true,
+          preferFreeFormats: true,
+          addHeader: ['referer:reddit.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
+        });
+        
+        // Transform formats
+        const formats = info.formats.map(format => ({
+          itag: `reddit_ytdl_${format.format_id}`,
+          quality: format.format_note || format.format,
+          mimeType: format.ext ? (format.vcodec !== 'none' ? `video/${format.ext}` : `audio/${format.ext}`) : 'video/mp4',
+          url: format.url,
+          hasAudio: format.acodec !== 'none',
+          hasVideo: format.vcodec !== 'none',
+          contentLength: format.filesize || 0,
+          container: format.ext || 'mp4'
+        }));
+        
+        // Special handling for Reddit separate audio/video
+        if (formats.length > 0) {
+          // Find if there are separate audio and video formats
+          const videoFormat = formats.find(f => f.hasVideo && !f.hasAudio);
+          const audioFormat = formats.find(f => f.hasAudio && !f.hasVideo);
+          
+          // If we have both, add a note to indicate they need to be merged
+          if (videoFormat && audioFormat) {
+            videoFormat.quality += ' (No Audio)';
+            audioFormat.quality += ' (Audio Only)';
+          }
+        }
+        
+        return {
+          title: info.title || 'Reddit Media',
+          thumbnails: info.thumbnail ? [{ url: info.thumbnail, width: 0, height: 0 }] : [],
+          formats: formats,
+          platform: 'reddit',
+          mediaType: formats.some(f => f.hasVideo) ? 'video' : 'image',
+          uploader: info.uploader || 'Reddit User',
+          uploadDate: info.upload_date || null,
+          description: info.description || ''
+        };
+      } catch (ytdlError) {
+        console.error('Reddit youtube-dl fallback error:', ytdlError);
+        throw new Error(`Failed to get Reddit info: ${redditError.message}`);
+      }
+    }
+  } catch (error) {
+    console.error('Reddit info error:', error);
+    throw new Error(`Reddit processing failed: ${error.message}`);
+  }
+}
+
+// Generic info endpoint using youtube-dl
+async function getGenericInfo(url, platform) {
+  try {
+    console.log(`Using youtube-dl for ${platform} URL: ${url}`);
+    const info = await youtubeDl(url, {
+      dumpSingleJson: true,
+      noCheckCertificates: true,
+      noWarnings: true,
+      preferFreeFormats: true,
+      addHeader: [
+        `referer:${new URL(url).origin}`, 
+        'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      ]
+    });
+    
+    const mediaType = getMediaType(platform);
+    
+    // Transform formats
+    const formats = info.formats.map(format => ({
+      itag: `${platform}_${format.format_id}`,
+      quality: format.format_note || format.format,
+      mimeType: format.ext ? `${mediaType}/${format.ext}` : `${mediaType}/mp4`,
+      url: format.url,
+      hasAudio: format.acodec !== 'none',
+      hasVideo: format.vcodec !== 'none',
+      contentLength: format.filesize || 0,
+      container: format.ext || 'mp4'
+    }));
+    
+    return {
+      title: info.title || `${platform} media`,
+      thumbnails: info.thumbnail ? [{ url: info.thumbnail, width: 0, height: 0 }] : [],
+      formats: formats,
+      platform: platform,
+      mediaType: mediaType,
+      uploader: info.uploader || null,
+      uploadDate: info.upload_date || null,
+      description: info.description || ''
+    };
+  } catch (error) {
+    console.error(`Generic youtube-dl error for ${platform}:`, error);
+    
+    // Scrape basic info at least
+    try {
+      const html = await getWebpageContent(url);
+      const title = extractTitleFromHtml(html) || `${platform} Media`;
+      const metaTags = extractMetaTags(html);
+      
+      return {
+        title: title,
+        thumbnails: metaTags.ogImage ? [{ url: metaTags.ogImage, width: 0, height: 0 }] : [],
+        formats: [{
+          itag: `${platform}_direct`,
+          quality: 'Direct URL',
+          mimeType: getMediaType(platform) === 'audio' ? 'audio/mp3' : 'video/mp4',
+          url: url,
+          hasAudio: true,
+          hasVideo: getMediaType(platform) === 'video',
+          contentLength: 0,
+          container: getMediaType(platform) === 'audio' ? 'mp3' : 'mp4'
+        }],
+        platform: platform,
+        mediaType: getMediaType(platform),
+        uploader: null,
+        uploadDate: null,
+        description: metaTags.ogDescription || ''
+      };
+    } catch (scrapeError) {
+      console.error(`Generic scrape error for ${platform}:`, scrapeError);
+      throw error;
+    }
+  }
+}
+
+// API ENDPOINTS
 
 // Youtube info endpoint
 app.get('/api/youtube', async (req, res) => {
@@ -1109,6 +1671,30 @@ app.get('/api/threads', async (req, res) => {
   }
 });
 
+// Reddit info endpoint
+app.get('/api/reddit', async (req, res) => {
+  try {
+    const url = req.query.url;
+
+    if (!url) {
+      return res.status(400).json({ error: 'URL is required' });
+    }
+
+    console.log(`Processing Reddit URL: ${url}`);
+    
+    try {
+      const info = await getRedditInfo(url);
+      res.json(info);
+    } catch (redditError) {
+      console.error('Reddit error:', redditError);
+      res.status(500).json({ error: 'Reddit processing failed', details: redditError.message });
+    }
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
+
 // Universal info endpoint - automatically detects platform
 app.get('/api/info', async (req, res) => {
   try {
@@ -1148,77 +1734,34 @@ app.get('/api/info', async (req, res) => {
         case 'threads':
           info = await getThreadsInfo(url);
           break;
+        case 'reddit':
+          info = await getRedditInfo(url);
+          break;
         default:
-          // Try youtube-dl for other platforms
-          try {
-            console.log(`Using youtube-dl for ${platform} URL...`);
-            const ytdlInfo = await youtubeDl(url, {
-              dumpSingleJson: true,
-              noCheckCertificates: true,
-              noWarnings: true,
-              preferFreeFormats: true,
-              addHeader: [
-                `referer:${new URL(url).origin}`, 
-                'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36'
-              ]
-            });
-            
-            // Transform formats
-            const formats = ytdlInfo.formats.map(format => ({
-              itag: `generic_${format.format_id}`,
-              quality: format.format_note || format.format,
-              mimeType: format.ext ? `${mediaType}/${format.ext}` : `${mediaType}/mp4`,
-              url: format.url,
-              hasAudio: format.acodec !== 'none',
-              hasVideo: format.vcodec !== 'none',
-              contentLength: format.filesize || 0,
-              container: format.ext || 'mp4'
-            }));
-            
-            info = {
-              title: ytdlInfo.title || `${platform} media`,
-              thumbnails: ytdlInfo.thumbnail ? [{ url: ytdlInfo.thumbnail, width: 0, height: 0 }] : [],
-              formats: formats,
-              platform: platform,
-              mediaType: mediaType,
-              uploader: ytdlInfo.uploader || null,
-              uploadDate: ytdlInfo.upload_date || null,
-              description: ytdlInfo.description || ''
-            };
-          } catch (ytdlError) {
-            console.error(`youtube-dl failed for ${platform}:`, ytdlError);
-            
-            // Fallback response
-            info = {
-              title: `Media from ${platform}`,
-              thumbnails: [],
-              formats: [{
-                itag: 'direct',
-                quality: 'Direct URL',
-                mimeType: mediaType === 'audio' ? 'audio/mp3' : 'video/mp4',
-                url: url,
-                hasAudio: true,
-                hasVideo: mediaType === 'video',
-                contentLength: 0,
-                container: mediaType === 'audio' ? 'mp3' : 'mp4'
-              }],
-              platform: platform,
-              mediaType: mediaType,
-              uploader: null,
-              uploadDate: null,
-              description: null
-            };
-          }
+          // Use generic youtube-dl approach for unsupported platforms
+          info = await getGenericInfo(url, platform);
       }
       
       res.json(info);
     } catch (error) {
       console.error(`${platform} error:`, error);
+      
+      // Fallback response
       res.status(500).json({ 
         error: `${platform} processing failed`, 
         details: error.message,
         platform: platform,
-        mediaType: mediaType
+        mediaType: mediaType,
+        formats: [{
+          itag: 'direct',
+          quality: 'Direct URL',
+          mimeType: mediaType === 'audio' ? 'audio/mp3' : 'video/mp4',
+          url: url,
+          hasAudio: true,
+          hasVideo: mediaType === 'video',
+          contentLength: 0,
+          container: mediaType === 'audio' ? 'mp3' : 'mp4'
+        }]
       });
     }
   } catch (error) {
@@ -1240,7 +1783,7 @@ app.get('/api/direct', async (req, res) => {
 
     // Prepare headers with a user agent to avoid blocking
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+      'User-Agent': getRandomUserAgent(),
       'Accept': '*/*',
       'Accept-Language': 'en-US,en;q=0.5',
       'Referer': new URL(url).origin,
@@ -1253,14 +1796,15 @@ app.get('/api/direct', async (req, res) => {
     let contentLength = 0;
 
     try {
-      const headResponse = await fetch(url, {
-        method: 'HEAD',
-        headers
+      const headResponse = await axios.head(url, {
+        headers,
+        maxRedirects: 5,
+        timeout: 5000
       });
 
-      if (headResponse.ok) {
-        contentType = headResponse.headers.get('content-type') || 'application/octet-stream';
-        contentLength = headResponse.headers.get('content-length') || 0;
+      if (headResponse.status === 200) {
+        contentType = headResponse.headers['content-type'] || 'application/octet-stream';
+        contentLength = headResponse.headers['content-length'] || 0;
       }
     } catch (headError) {
       console.log('HEAD request failed, continuing anyway:', headError.message);
@@ -1293,16 +1837,16 @@ app.get('/api/direct', async (req, res) => {
     }
 
     // Try to fetch the content
-    const response = await fetch(url, {
-      headers
+    const response = await axios({
+      method: 'get',
+      url: url,
+      headers: headers,
+      responseType: 'stream',
+      maxRedirects: 5
     });
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch content: ${response.status} ${response.statusText}`);
-    }
-
     // Update content type if available from response
-    contentType = response.headers.get('content-type') || contentType;
+    contentType = response.headers['content-type'] || contentType;
     
     // Set response headers
     res.setHeader('Content-Type', contentType);
@@ -1312,7 +1856,7 @@ app.get('/api/direct', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
 
     // Pipe the response to the client
-    response.body.pipe(res);
+    response.data.pipe(res);
 
   } catch (error) {
     console.error('Direct download error:', error);
@@ -1457,7 +2001,7 @@ app.get('/api/audio', async (req, res) => {
           noCheckCertificates: true,
           noWarnings: true,
           preferFreeFormats: true,
-          addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+          addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
         };
         
         if (itag && itag !== 'best') {
@@ -1473,26 +2017,59 @@ app.get('/api/audio', async (req, res) => {
         // Try to use platform-specific API if youtube-dl fails
         try {
           // Get info from platform-specific endpoint
-          const directUrl = await getMediaDirectUrl(url, platform, 'audio');
+          let directUrl = url;
           
-          if (!directUrl) {
-            throw new Error('Could not get direct audio URL');
+          // Try to get platform info first
+          try {
+            let info;
+            switch (platform) {
+              case 'tiktok':
+                info = await getTikTokInfo(url);
+                break;
+              case 'twitter':
+                info = await getTwitterInfo(url);
+                break;
+              case 'instagram':
+                info = await getInstagramInfo(url);
+                break;
+              case 'facebook':
+                info = await getFacebookVideoInfo(url);
+                break;
+              default:
+                info = null;
+            }
+            
+            if (info && info.formats && info.formats.length > 0) {
+              // Find audio-only format if available
+              const audioFormat = info.formats.find(f => f.hasAudio && !f.hasVideo);
+              if (audioFormat) {
+                directUrl = audioFormat.url;
+              } else {
+                // Just use the first format with audio
+                const formatWithAudio = info.formats.find(f => f.hasAudio);
+                if (formatWithAudio) {
+                  directUrl = formatWithAudio.url;
+                }
+              }
+            }
+          } catch (infoError) {
+            console.error('Error getting platform info for audio:', infoError);
+            // Continue with direct URL
           }
           
           // Download the file
-          const response = await fetch(directUrl, {
+          const response = await axios({
+            method: 'get',
+            url: directUrl,
+            responseType: 'stream',
             headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36'
+              'User-Agent': getRandomUserAgent()
             }
           });
           
-          if (!response.ok) {
-            throw new Error(`Failed to download audio: ${response.status} ${response.statusText}`);
-          }
-          
-          // Save the file
+          // Save to file
           const fileStream = fs.createWriteStream(tempFilePath);
-          await pipeline(response.body, fileStream);
+          await pipeline(response.data, fileStream);
         } catch (dlError) {
           console.error('Error in platform-specific audio download:', dlError);
           throw new Error(`Audio download failed: ${dlError.message}`);
@@ -1530,76 +2107,6 @@ app.get('/api/audio', async (req, res) => {
   }
 });
 
-// Helper function to get direct URL for media based on platform
-async function getMediaDirectUrl(url, platform, mediaType = 'video') {
-  try {
-    // Try to get the info using platform-specific handler
-    let info;
-    
-    switch (platform) {
-      case 'youtube':
-        info = await getYouTubeInfo(url);
-        break;
-      case 'tiktok':
-        info = await getTikTokInfo(url);
-        break;
-      case 'twitter':
-        info = await getTwitterInfo(url);
-        break;
-      case 'instagram':
-        info = await getInstagramInfo(url);
-        break;
-      case 'facebook':
-        info = await getFacebookVideoInfo(url);
-        break;
-      case 'pinterest':
-        info = await getPinterestInfo(url);
-        break;
-      case 'threads':
-        info = await getThreadsInfo(url);
-        break;
-      default:
-        throw new Error(`Unsupported platform: ${platform}`);
-    }
-    
-    if (!info || !info.formats || info.formats.length === 0) {
-      throw new Error('No formats found');
-    }
-    
-    // Filter formats based on requested media type
-    let filteredFormats = info.formats;
-    
-    if (mediaType === 'audio') {
-      // Prefer audio-only formats
-      filteredFormats = info.formats.filter(f => f.hasAudio && !f.hasVideo);
-      
-      // If no audio-only formats, get any with audio
-      if (filteredFormats.length === 0) {
-        filteredFormats = info.formats.filter(f => f.hasAudio);
-      }
-    } else if (mediaType === 'video') {
-      // Prefer formats with both audio and video
-      filteredFormats = info.formats.filter(f => f.hasAudio && f.hasVideo);
-      
-      // If no formats with both, get any with video
-      if (filteredFormats.length === 0) {
-        filteredFormats = info.formats.filter(f => f.hasVideo);
-      }
-    }
-    
-    // If still no formats, use all formats
-    if (filteredFormats.length === 0) {
-      filteredFormats = info.formats;
-    }
-    
-    // Get the best format (first one is usually best)
-    return filteredFormats[0].url;
-  } catch (error) {
-    console.error(`Error getting direct URL for ${platform}:`, error);
-    return null;
-  }
-}
-
 // Generic download endpoint
 app.get('/api/download', async (req, res) => {
   try {
@@ -1630,7 +2137,7 @@ app.get('/api/download', async (req, res) => {
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
-      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36']
+      addHeader: ['referer:' + new URL(url).origin, 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
     };
 
     // If format is specified, use it
@@ -1644,29 +2151,75 @@ app.get('/api/download', async (req, res) => {
     } catch (ytdlErr) {
       console.error('youtube-dl download error:', ytdlErr);
 
-      // For very troublesome sites, try a direct fetch approach
+      // Try platform-specific methods
       try {
-        // Try to get direct URL using platform-specific methods
-        const directUrl = await getMediaDirectUrl(url, platform);
+        // Get info from platform-specific endpoint
+        let directUrl = url;
+        let contentType = 'video/mp4';
         
-        if (!directUrl) {
-          throw new Error('Could not get direct media URL');
+        // Try to get platform info first
+        try {
+          let info;
+          switch (platform) {
+            case 'tiktok':
+              info = await getTikTokInfo(url);
+              break;
+            case 'twitter':
+              info = await getTwitterInfo(url);
+              break;
+            case 'instagram':
+              info = await getInstagramInfo(url);
+              break;
+            case 'facebook':
+              info = await getFacebookVideoInfo(url);
+              break;
+            case 'pinterest':
+              info = await getPinterestInfo(url);
+              break;
+            case 'threads':
+              info = await getThreadsInfo(url);
+              break;
+            case 'reddit':
+              info = await getRedditInfo(url);
+              break;
+            default:
+              info = null;
+          }
+          
+          if (info && info.formats && info.formats.length > 0) {
+            // Use specified format if available
+            if (itag) {
+              const format = info.formats.find(f => f.itag === itag);
+              if (format) {
+                directUrl = format.url;
+                contentType = format.mimeType;
+              }
+            } else {
+              // Otherwise use first format
+              directUrl = info.formats[0].url;
+              contentType = info.formats[0].mimeType;
+            }
+          }
+        } catch (infoError) {
+          console.error('Error getting platform info:', infoError);
+          // Continue with direct URL
         }
         
-        // Download the file
-        const response = await fetch(directUrl, {
+        // Try direct download
+        const response = await axios({
+          method: 'get',
+          url: directUrl,
+          responseType: 'stream',
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36'
-          }
+            'User-Agent': getRandomUserAgent(),
+            'Referer': new URL(url).origin
+          },
+          maxRedirects: 5
         });
         
-        if (!response.ok) {
-          throw new Error(`Failed to download: ${response.status} ${response.statusText}`);
-        }
-        
-        // Save the file
+        // Save to file
         const fileStream = fs.createWriteStream(tempFilePath);
-        await pipeline(response.body, fileStream);
+        await pipeline(response.data, fileStream);
       } catch (directError) {
         console.error('Direct download error:', directError);
         throw new Error(`Download failed: ${directError.message}`);
