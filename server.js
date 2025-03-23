@@ -7,7 +7,6 @@ const http = require('http');
 const https = require('https');
 const youtubeDl = require('youtube-dl-exec');
 const ytdl = require('ytdl-core');
-const tiktokScraper = require('tiktok-scraper');
 const fbDownloader = require('fb-downloader');
 const instagramUrlDirect = require('instagram-url-direct');
 const { TwitterScraper } = require('@yimura/scraper');
@@ -293,116 +292,110 @@ async function getYouTubeInfo(url) {
 }
 
 // Get TikTok video info using tiktok-scraper
+// Get TikTok video info - fallback implementation using youtube-dl
 async function getTikTokInfo(url) {
   try {
-    const videoData = await tiktokScraper.getVideoMeta(url);
+    console.log('Using youtube-dl for TikTok...');
+    const info = await youtubeDl(url, {
+      dumpSingleJson: true,
+      noCheckCertificates: true,
+      noWarnings: true,
+      preferFreeFormats: true,
+      addHeader: ['referer:tiktok.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
+    });
     
-    if (!videoData || !videoData.collector || !videoData.collector[0]) {
-      throw new Error('Could not fetch TikTok video data');
-    }
-    
-    const video = videoData.collector[0];
-    
-    // Create formats array
-    const formats = [];
-    
-    // No watermark version (if available)
-    if (video.videoUrlNoWaterMark) {
-      formats.push({
-        itag: 'tiktok_nowm',
-        quality: 'HD (No Watermark)',
-        mimeType: 'video/mp4',
-        url: video.videoUrlNoWaterMark,
-        hasAudio: true,
-        hasVideo: true,
-        contentLength: 0,
-        container: 'mp4'
-      });
-    }
-    
-    // Standard version
-    if (video.videoUrl) {
-      formats.push({
-        itag: 'tiktok_wm',
-        quality: 'HD (With Watermark)',
-        mimeType: 'video/mp4',
-        url: video.videoUrl,
-        hasAudio: true,
-        hasVideo: true,
-        contentLength: 0,
-        container: 'mp4'
-      });
-    }
-    
-    // Audio only
-    if (video.musicUrl) {
-      formats.push({
-        itag: 'tiktok_audio',
-        quality: 'Audio Only',
-        mimeType: 'audio/mp3',
-        url: video.musicUrl,
-        hasAudio: true,
-        hasVideo: false,
-        contentLength: 0,
-        container: 'mp3'
-      });
-    }
+    // Transform formats
+    const formats = info.formats.map(format => ({
+      itag: `tiktok_ytdl_${format.format_id}`,
+      quality: format.format_note || format.format,
+      mimeType: format.ext ? `video/${format.ext}` : 'video/mp4',
+      url: format.url,
+      hasAudio: format.acodec !== 'none',
+      hasVideo: format.vcodec !== 'none',
+      contentLength: format.filesize || 0,
+      container: format.ext || 'mp4'
+    }));
     
     return {
-      title: video.text || `TikTok by ${video.authorMeta.name}`,
-      thumbnails: [{ url: video.covers.default, width: 0, height: 0 }],
-      duration: video.videoMeta.duration,
+      title: info.title || 'TikTok Video',
+      thumbnails: [{ url: info.thumbnail || '', width: 0, height: 0 }],
+      duration: info.duration || 0,
       formats: formats,
       platform: 'tiktok',
       mediaType: 'video',
-      uploader: video.authorMeta.name,
-      uploadDate: null,
-      description: video.text
+      uploader: info.uploader || 'TikTok User',
+      uploadDate: info.upload_date || null,
+      description: info.description || ''
     };
   } catch (error) {
-    console.error('TikTok info error:', error);
+    console.error('TikTok youtube-dl error:', error);
     
-    // Fallback to youtube-dl
+    // Fallback to direct scraping as a last resort
     try {
-      console.log('Falling back to youtube-dl for TikTok...');
-      const info = await youtubeDl(url, {
-        dumpSingleJson: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        preferFreeFormats: true,
-        addHeader: ['referer:tiktok.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36']
+      // Get the page HTML
+      const html = await getWebpageContent(url);
+      
+      // Extract title
+      let title = 'TikTok Video';
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch && titleMatch[1]) {
+        title = titleMatch[1].replace(' | TikTok', '').trim();
+      }
+      
+      // Extract meta tags
+      const metaTags = extractMetaTags(html);
+      
+      // Find video URL from meta tags
+      let videoUrl = null;
+      
+      if (metaTags.ogVideo) {
+        videoUrl = metaTags.ogVideo;
+      } else if (metaTags.ogVideoUrl) {
+        videoUrl = metaTags.ogVideoUrl;
+      }
+      
+      if (!videoUrl) {
+        // Try to find video URL in page source
+        const videoMatch = html.match(/"playAddr":"([^"]+)"/);
+        if (videoMatch && videoMatch[1]) {
+          videoUrl = videoMatch[1].replace(/\\u002F/g, '/');
+        }
+      }
+      
+      if (!videoUrl) {
+        throw new Error('Could not extract TikTok video URL');
+      }
+      
+      const formats = [];
+      
+      // Add video format
+      formats.push({
+        itag: 'tiktok_scrape',
+        quality: 'Original',
+        mimeType: 'video/mp4',
+        url: videoUrl,
+        hasAudio: true,
+        hasVideo: true,
+        contentLength: 0,
+        container: 'mp4'
       });
       
-      // Transform formats
-      const formats = info.formats.map(format => ({
-        itag: `tiktok_ytdl_${format.format_id}`,
-        quality: format.format_note || format.format,
-        mimeType: format.ext ? `video/${format.ext}` : 'video/mp4',
-        url: format.url,
-        hasAudio: format.acodec !== 'none',
-        hasVideo: format.vcodec !== 'none',
-        contentLength: format.filesize || 0,
-        container: format.ext || 'mp4'
-      }));
-      
       return {
-        title: info.title || 'TikTok Video',
-        thumbnails: [{ url: info.thumbnail || '', width: 0, height: 0 }],
-        duration: info.duration || 0,
+        title: title,
+        thumbnails: metaTags.ogImage ? [{ url: metaTags.ogImage, width: 0, height: 0 }] : [],
         formats: formats,
         platform: 'tiktok',
         mediaType: 'video',
-        uploader: info.uploader || 'TikTok User',
-        uploadDate: info.upload_date || null,
-        description: info.description || ''
+        uploader: null,
+        uploadDate: null,
+        description: metaTags.ogDescription || title
       };
-    } catch (ytdlError) {
-      console.error('TikTok youtube-dl fallback error:', ytdlError);
+    } catch (scrapeError) {
+      console.error('TikTok direct scrape error:', scrapeError);
       throw new Error(`Failed to get TikTok info: ${error.message}`);
     }
   }
 }
-
 // Get Twitter media info using Yimura Twitter Scraper
 async function getTwitterInfo(url) {
   try {
