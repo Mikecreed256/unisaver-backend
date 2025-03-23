@@ -1,4 +1,4 @@
-// youtube-handler.js - A specialized handler for YouTube that doesn't rely on yt-dlp
+// youtube-handler.js - A reliable handler for YouTube downloads
 import fetch from 'node-fetch';
 import fs from 'fs';
 
@@ -7,7 +7,7 @@ import fs from 'fs';
  * @param {string} url YouTube URL
  * @returns {string|null} Video ID or null if not found
  */
-function extractVideoId(url) {
+export function extractVideoId(url) {
   const patterns = [
     /(?:v=|\/embed\/|\/watch\?v=|\/watch\?.+&v=|youtu\.be\/|\/v\/|\/e\/|\/shorts\/)([^#&?\/\s]{11})/,
     /^[^#&?\/\s]{11}$/  // Direct video ID
@@ -35,335 +35,287 @@ function extractVideoId(url) {
 }
 
 /**
- * Clean special characters from string
- * @param {string} str Input string
- * @returns {string} Cleaned string
+ * Gets video information from YouTube (title, thumbnail, etc)
+ * @param {string} videoId YouTube video ID
+ * @returns {Promise<Object>} Video info
  */
-function cleanString(str) {
-  if (!str) return '';
-  return str.replace(/\\u0026/g, '&')
-            .replace(/\\"/g, '"')
-            .replace(/\\\//g, '/')
-            .replace(/\\n/g, '\n')
-            .replace(/\\r/g, '\r')
-            .replace(/\\t/g, '\t')
-            .replace(/\\\\/g, '\\');
-}
-
-/**
- * Extract YouTube formats from player response
- * @param {Object} playerResponse YouTube player response
- * @returns {Array} Formats array
- */
-function extractFormatsFromPlayerResponse(playerResponse) {
-  const formats = [];
-  
-  // Function to process a format
-  const processFormat = (format) => {
-    if (!format.url && format.signatureCipher) {
-      // We can't handle signature cipher formats without additional code
-      return null;
+export async function getVideoInfo(videoId) {
+  try {
+    // First try YouTube's oEmbed API which is reliable
+    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+    const oembedResponse = await fetch(oembedUrl);
+    
+    if (oembedResponse.ok) {
+      const oembedData = await oembedResponse.json();
+      return {
+        title: oembedData.title || `YouTube Video - ${videoId}`,
+        author: oembedData.author_name || 'YouTube',
+        thumbnailUrl: oembedData.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+      };
     }
-    
-    const mimeType = format.mimeType || 'unknown';
-    const isVideo = mimeType.includes('video');
-    const isAudio = mimeType.includes('audio');
-    
-    // Skip formats without URLs
-    if (!format.url) return null;
-    
-    // Create a format object compatible with our API
-    return {
-      itag: format.itag.toString(),
-      quality: format.qualityLabel || format.quality || 'Unknown',
-      mimeType: mimeType,
-      url: format.url,
-      hasAudio: Boolean(format.audioQuality || mimeType.includes('audio')),
-      hasVideo: Boolean(format.qualityLabel || mimeType.includes('video')),
-      contentLength: parseInt(format.contentLength) || 0,
-      audioBitrate: format.audioBitrate || null,
-      videoCodec: format.codecs ? format.codecs.split(', ')[0] : null,
-      audioCodec: format.codecs ? format.codecs.split(', ').slice(1).join(', ') : null,
-      container: mimeType.split(';')[0].split('/')[1] || null
-    };
-  };
-  
-  // Process streaming formats
-  if (playerResponse.streamingData) {
-    // Process adaptive formats (usually better quality, separated audio/video)
-    if (playerResponse.streamingData.adaptiveFormats) {
-      for (const format of playerResponse.streamingData.adaptiveFormats) {
-        const processedFormat = processFormat(format);
-        if (processedFormat) formats.push(processedFormat);
-      }
-    }
-    
-    // Process regular formats (combined audio/video)
-    if (playerResponse.streamingData.formats) {
-      for (const format of playerResponse.streamingData.formats) {
-        const processedFormat = processFormat(format);
-        if (processedFormat) formats.push(processedFormat);
-      }
-    }
+  } catch (oembedError) {
+    console.error('YouTube oembed error:', oembedError);
   }
   
-  return formats;
+  // Fallback: get minimal info from page
+  try {
+    const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const pageResponse = await fetch(pageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
+    });
+    
+    if (pageResponse.ok) {
+      const html = await pageResponse.text();
+      
+      // Extract title
+      let title = `YouTube Video - ${videoId}`;
+      const titleMatch = html.match(/<title>(.+?)<\/title>/i);
+      if (titleMatch && titleMatch[1]) {
+        title = titleMatch[1].replace(' - YouTube', '').trim();
+      }
+      
+      // Extract author
+      let author = 'YouTube';
+      const authorMatch = html.match(/"ownerChannelName":"([^"]+)"/);
+      if (authorMatch && authorMatch[1]) {
+        author = authorMatch[1];
+      }
+      
+      return {
+        title,
+        author,
+        thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+      };
+    }
+  } catch (pageError) {
+    console.error('YouTube page fetch error:', pageError);
+  }
+  
+  // Last resort: return basic info
+  return {
+    title: `YouTube Video - ${videoId}`,
+    author: 'YouTube',
+    thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+  };
 }
 
 /**
- * Extract YouTube media data
- * @param {string} url YouTube URL
- * @returns {Promise<Object>} Media data
+ * Downloads a YouTube video reliably using Y2mate service
+ * @param {string} videoId YouTube video ID
+ * @param {object} res Express response object
+ * @returns {Promise<boolean>} Success status
  */
-export async function extractYouTubeMedia(url) {
+export async function downloadVideo(videoId, res) {
   try {
-    console.log(`Extracting YouTube media from: ${url}`);
+    // Get video info for better filename
+    const videoInfo = await getVideoInfo(videoId);
+    const videoTitle = videoInfo.title
+      .replace(/[\/\\:*?"<>|]/g, '_')
+      .replace(/\s+/g, '_')
+      .substring(0, 100);
     
-    // Extract video ID
-    const videoId = extractVideoId(url);
-    if (!videoId) {
-      throw new Error('Could not extract YouTube video ID');
+    // Use Y2mate service to get direct download links
+    // Step 1: First contact to get the k parameter
+    const analyzeUrl = 'https://www.y2mate.com/mates/en691/analyze/ajax';
+    const analyzeData = new URLSearchParams();
+    analyzeData.append('k_query', `https://www.youtube.com/watch?v=${videoId}`);
+    analyzeData.append('k_page', 'home');
+    analyzeData.append('hl', 'en');
+    analyzeData.append('q_auto', '0');
+    
+    const analyzeResponse = await fetch(analyzeUrl, {
+      method: 'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Origin': 'https://www.y2mate.com',
+        'Referer': 'https://www.y2mate.com/'
+      },
+      body: analyzeData
+    });
+    
+    if (!analyzeResponse.ok) {
+      throw new Error(`Y2mate analyze request failed: ${analyzeResponse.status}`);
     }
     
-    console.log(`YouTube video ID: ${videoId}`);
+    const analyzeResult = await analyzeResponse.json();
     
-    // First try with YouTube webapp approach
-    try {
-      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
-      
-      // First, get the watch page
-      const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-        headers: {
-          'User-Agent': userAgent,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5'
-        }
+    if (!analyzeResult.result) {
+      throw new Error('No result in Y2mate response');
+    }
+    
+    // Step 2: Extract the video formats and k values
+    const kMatch = analyzeResult.result.match(/k__id\s*=\s*["']([^"']+)["']/);
+    
+    if (!kMatch || !kMatch[1]) {
+      throw new Error('Could not extract k parameter from Y2mate response');
+    }
+    
+    const kId = kMatch[1];
+    
+    // Step 3: Request the download link for MP4 720p or highest available
+    const convertUrl = 'https://www.y2mate.com/mates/convert';
+    const convertData = new URLSearchParams();
+    convertData.append('type', 'youtube');
+    convertData.append('_id', kId);
+    convertData.append('v_id', videoId);
+    convertData.append('ajax', '1');
+    convertData.append('token', '');
+    convertData.append('ftype', 'mp4');
+    convertData.append('fquality', '720');
+    
+    const convertResponse = await fetch(convertUrl, {
+      method: 'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Origin': 'https://www.y2mate.com',
+        'Referer': 'https://www.y2mate.com/'
+      },
+      body: convertData
+    });
+    
+    if (!convertResponse.ok) {
+      throw new Error(`Y2mate convert request failed: ${convertResponse.status}`);
+    }
+    
+    const convertResult = await convertResponse.json();
+    
+    if (!convertResult.result) {
+      throw new Error('No result in Y2mate convert response');
+    }
+    
+    // Extract the direct download URL from the result
+    const downloadMatch = convertResult.result.match(/href="([^"]+)"/);
+    
+    if (!downloadMatch || !downloadMatch[1]) {
+      throw new Error('Could not extract download URL from Y2mate response');
+    }
+    
+    const downloadUrl = downloadMatch[1];
+    
+    // Now fetch the actual video and pipe it to the response
+    console.log(`Downloading YouTube video from: ${downloadUrl}`);
+    
+    const videoResponse = await fetch(downloadUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Referer': 'https://www.y2mate.com/'
+      }
+    });
+    
+    if (!videoResponse.ok) {
+      throw new Error(`Failed to download video: ${videoResponse.status}`);
+    }
+    
+    // Set appropriate headers for the download
+    res.setHeader('Content-Type', 'video/mp4');
+    
+    const contentLength = videoResponse.headers.get('content-length');
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength);
+    }
+    
+    res.setHeader('Content-Disposition', `attachment; filename="${videoTitle}.mp4"`);
+    
+    // Set cache control headers to prevent caching issues
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    // Stream the video directly to the client
+    videoResponse.body.pipe(res);
+    
+    return true;
+  } catch (error) {
+    console.error('YouTube download error:', error);
+    
+    // Only send error if headers haven't been sent
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: 'YouTube download failed',
+        message: error.message,
+        videoId: videoId
       });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch YouTube page: ${response.status} ${response.statusText}`);
-      }
-      
-      const html = await response.text();
-      
-      // Find the player response data
-      const playerResponseRegex = /ytInitialPlayerResponse\s*=\s*({.+?});/;
-      const playerResponseMatch = html.match(playerResponseRegex);
-      
-      if (!playerResponseMatch || !playerResponseMatch[1]) {
-        throw new Error('Could not find player response data');
-      }
-      
-      // Parse the player response
-      const playerResponse = JSON.parse(playerResponseMatch[1]);
-      
-      // Extract video details
-      const videoDetails = playerResponse.videoDetails || {};
-      const title = videoDetails.title || 'YouTube Video';
-      const description = videoDetails.shortDescription || '';
-      const channelName = videoDetails.author || '';
-      const lengthSeconds = parseInt(videoDetails.lengthSeconds) || 0;
-      
-      // Get thumbnails
-      const thumbnails = [];
-      if (videoDetails.thumbnail && videoDetails.thumbnail.thumbnails) {
-        for (const thumbnail of videoDetails.thumbnail.thumbnails) {
-          thumbnails.push({
-            url: thumbnail.url,
-            width: thumbnail.width,
-            height: thumbnail.height
-          });
+    }
+    
+    return false;
+  }
+}
+
+/**
+ * Get video info for API response
+ * @param {string} url YouTube URL
+ * @returns {Promise<Object>} Video info object
+ */
+export async function getYouTubeInfo(url) {
+  try {
+    const videoId = extractVideoId(url);
+    
+    if (!videoId) {
+      throw new Error('Invalid YouTube URL');
+    }
+    
+    const videoInfo = await getVideoInfo(videoId);
+    
+    return {
+      title: videoInfo.title,
+      thumbnails: [
+        {
+          url: videoInfo.thumbnailUrl,
+          width: 480,
+          height: 360
         }
-      }
-      
-      // Sort thumbnails by resolution (highest first)
-      thumbnails.sort((a, b) => (b.width || 0) - (a.width || 0));
-      
-      // Extract formats
-      const formats = extractFormatsFromPlayerResponse(playerResponse);
-      
-      // If no formats found, throw error
-      if (formats.length === 0) {
-        throw new Error('No formats found');
-      }
-      
-      // Create direct URL for the best format
-      let bestFormat = null;
-      
-      // First try to find a format with both audio and video
-      for (const format of formats) {
-        if (format.hasAudio && format.hasVideo) {
-          bestFormat = format;
-          break;
-        }
-      }
-      
-      // If no combined format found, take the first format
-      if (!bestFormat) {
-        bestFormat = formats[0];
-      }
-      
-      // Create direct download URL
-      const directUrl = `/api/direct?url=${encodeURIComponent(bestFormat.url)}&filename=${encodeURIComponent(title + '.mp4')}`;
-      
-      // Return video info
-      return {
-        title: title,
-        description: description,
-        thumbnails: thumbnails,
-        duration: lengthSeconds,
-        formats: formats,
-        platform: 'youtube',
-        mediaType: 'video',
-        uploader: channelName,
-        uploadDate: null, // Not easily available
-        directUrl: directUrl
-      };
-    } catch (error) {
-      console.log('YouTube webapp extraction failed:', error);
-      
-      // Fallback to m.youtube.com mobile site which might have different restrictions
-      const mobileResponse = await fetch(`https://m.youtube.com/watch?v=${videoId}`, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5'
-        }
-      });
-      
-      if (!mobileResponse.ok) {
-        throw new Error(`Failed to fetch YouTube mobile page: ${mobileResponse.status} ${mobileResponse.statusText}`);
-      }
-      
-      const mobileHtml = await mobileResponse.text();
-      
-      // Look for player response in mobile site
-      const mobilePlayerResponseRegex = /ytInitialPlayerResponse\s*=\s*({.+?});/;
-      const mobilePlayerResponseMatch = mobileHtml.match(mobilePlayerResponseRegex);
-      
-      if (!mobilePlayerResponseMatch || !mobilePlayerResponseMatch[1]) {
-        throw new Error('Could not find player response data in mobile site');
-      }
-      
-      // Parse the player response
-      const mobilePlayerResponse = JSON.parse(mobilePlayerResponseMatch[1]);
-      
-      // Extract video details
-      const videoDetails = mobilePlayerResponse.videoDetails || {};
-      const title = videoDetails.title || 'YouTube Video';
-      const description = videoDetails.shortDescription || '';
-      const channelName = videoDetails.author || '';
-      const lengthSeconds = parseInt(videoDetails.lengthSeconds) || 0;
-      
-      // Get thumbnails
-      const thumbnails = [];
-      if (videoDetails.thumbnail && videoDetails.thumbnail.thumbnails) {
-        for (const thumbnail of videoDetails.thumbnail.thumbnails) {
-          thumbnails.push({
-            url: thumbnail.url,
-            width: thumbnail.width,
-            height: thumbnail.height
-          });
-        }
-      }
-      
-      // Sort thumbnails by resolution (highest first)
-      thumbnails.sort((a, b) => (b.width || 0) - (a.width || 0));
-      
-      // Extract formats
-      const formats = extractFormatsFromPlayerResponse(mobilePlayerResponse);
-      
-      // If no formats found, revert to a basic implementation
-      if (formats.length === 0) {
-        // Create basic format with limited info
-        const basicFormat = {
-          itag: 'basic',
-          quality: 'Unknown',
+      ],
+      formats: [
+        {
+          itag: 'mp4-720p',
+          quality: '720p',
           mimeType: 'video/mp4',
-          url: `https://youtube.com/watch?v=${videoId}`,
+          url: url,
           hasAudio: true,
           hasVideo: true,
           contentLength: 0,
           container: 'mp4'
-        };
-        
-        return {
-          title: title || `YouTube Video - ${videoId}`,
-          description: description || '',
-          thumbnails: thumbnails.length > 0 ? thumbnails : [{ 
-            url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, 
-            width: 480, 
-            height: 360 
-          }],
-          duration: lengthSeconds || 0,
-          formats: [basicFormat],
-          platform: 'youtube',
-          mediaType: 'video',
-          uploader: channelName || '',
-          uploadDate: null,
-          directUrl: `/api/direct?url=${encodeURIComponent(basicFormat.url)}&filename=${encodeURIComponent((title || 'YouTube-Video') + '.mp4')}`
-        };
-      }
-      
-      // Create direct URL for the best format
-      let bestFormat = null;
-      
-      // First try to find a format with both audio and video
-      for (const format of formats) {
-        if (format.hasAudio && format.hasVideo) {
-          bestFormat = format;
-          break;
         }
-      }
-      
-      // If no combined format found, take the first format
-      if (!bestFormat) {
-        bestFormat = formats[0];
-      }
-      
-      // Create direct download URL
-      const directUrl = `/api/direct?url=${encodeURIComponent(bestFormat.url)}&filename=${encodeURIComponent(title + '.mp4')}`;
-      
-      // Return video info
-      return {
-        title: title,
-        description: description,
-        thumbnails: thumbnails,
-        duration: lengthSeconds,
-        formats: formats,
-        platform: 'youtube',
-        mediaType: 'video',
-        uploader: channelName,
-        uploadDate: null, // Not easily available
-        directUrl: directUrl
-      };
-    }
-  } catch (error) {
-    console.error('YouTube extraction error:', error);
-    
-    // Create a fallback response
-    const videoId = extractVideoId(url) || 'unknown';
-    
-    return {
-      title: `YouTube Video - ${videoId}`,
-      thumbnails: [{ 
-        url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, 
-        width: 480, 
-        height: 360 
-      }],
-      formats: [{
-        itag: 'fallback',
-        quality: 'Unknown',
-        mimeType: 'video/mp4',
-        url: url,
-        hasAudio: true,
-        hasVideo: true,
-        contentLength: 0,
-        container: 'mp4'
-      }],
+      ],
       platform: 'youtube',
       mediaType: 'video',
-      directUrl: url
+      uploader: videoInfo.author,
+      directUrl: `/api/download?url=${encodeURIComponent(url)}`
+    };
+  } catch (error) {
+    console.error('YouTube info error:', error);
+    
+    // Return basic info
+    return {
+      title: 'YouTube Video',
+      thumbnails: [
+        {
+          url: `https://i.ytimg.com/vi/${extractVideoId(url) || 'default'}/hqdefault.jpg`,
+          width: 480,
+          height: 360
+        }
+      ],
+      formats: [
+        {
+          itag: 'direct',
+          quality: 'Original',
+          mimeType: 'video/mp4',
+          url: url,
+          hasAudio: true,
+          hasVideo: true,
+          contentLength: 0,
+          container: 'mp4'
+        }
+      ],
+      platform: 'youtube',
+      mediaType: 'video',
+      directUrl: `/api/download?url=${encodeURIComponent(url)}`
     };
   }
 }
