@@ -1,15 +1,16 @@
-// server.js - Complete solution with all platform support using yt-dlp and cookie support for Instagram
+// server.js - Complete solution with all platform support using yt-dlp and improved Pinterest video handling
 const express = require('express');
 const cors = require('cors');
-// Use youtube-dl-exec with yt-dlp as the binary for more modern extraction
+// Use youtube-dl-exec with yt-dlp as the binary for better extraction
 const youtubeDl = require('youtube-dl-exec');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const fetch = (...args) =>
+  import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
-// For Instagram extraction with cookie support
+// For Instagram extraction with cookie support (if needed)
 const instagramDirect = require('instagram-url-direct');
 
 const app = express();
@@ -39,63 +40,31 @@ app.get('/', (req, res) => {
 // Enhanced platform detection
 function detectPlatform(url) {
   const lowerUrl = url.toLowerCase();
-
-  // Social Media Platforms
-  if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) {
-    return 'youtube';
-  } else if (lowerUrl.includes('facebook.com') || lowerUrl.includes('fb.com') || lowerUrl.includes('fb.watch')) {
-    return 'facebook';
-  } else if (lowerUrl.includes('instagram.com')) {
-    return 'instagram';
-  } else if (lowerUrl.includes('tiktok.com')) {
-    return 'tiktok';
-  } else if (lowerUrl.includes('twitter.com') || lowerUrl.includes('x.com')) {
-    return 'twitter';
-  } else if (lowerUrl.includes('threads.net')) {
-    return 'threads';
-  } else if (lowerUrl.includes('pinterest.com')) {
-    return 'pinterest';
-  }
-  // Music Platforms
-  else if (lowerUrl.includes('spotify.com')) {
-    return 'spotify';
-  } else if (lowerUrl.includes('soundcloud.com')) {
-    return 'soundcloud';
-  } else if (lowerUrl.includes('bandcamp.com')) {
-    return 'bandcamp';
-  } else if (lowerUrl.includes('deezer.com')) {
-    return 'deezer';
-  } else if (lowerUrl.includes('music.apple.com')) {
-    return 'apple-music';
-  } else if (lowerUrl.includes('music.amazon.com')) {
-    return 'amazon-music';
-  } else if (lowerUrl.includes('mixcloud.com')) {
-    return 'mixcloud';
-  } else if (lowerUrl.includes('audiomack.com')) {
-    return 'audiomack';
-  }
-  // Video Platforms
-  else if (lowerUrl.includes('vimeo.com')) {
-    return 'vimeo';
-  } else if (lowerUrl.includes('dailymotion.com')) {
-    return 'dailymotion';
-  } else if (lowerUrl.includes('twitch.tv')) {
-    return 'twitch';
-  } else if (lowerUrl.includes('reddit.com')) {
-    return 'reddit';
-  } else if (lowerUrl.includes('linkedin.com')) {
-    return 'linkedin';
-  } else if (lowerUrl.includes('tumblr.com')) {
-    return 'tumblr';
-  } else if (lowerUrl.includes('vk.com')) {
-    return 'vk';
-  } else if (lowerUrl.includes('bilibili.com')) {
-    return 'bilibili';
-  } else if (lowerUrl.includes('snapchat.com')) {
-    return 'snapchat';
-  } else {
-    return 'generic';
-  }
+  if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) return 'youtube';
+  else if (lowerUrl.includes('facebook.com') || lowerUrl.includes('fb.com') || lowerUrl.includes('fb.watch')) return 'facebook';
+  else if (lowerUrl.includes('instagram.com')) return 'instagram';
+  else if (lowerUrl.includes('tiktok.com')) return 'tiktok';
+  else if (lowerUrl.includes('twitter.com') || lowerUrl.includes('x.com')) return 'twitter';
+  else if (lowerUrl.includes('threads.net')) return 'threads';
+  else if (lowerUrl.includes('pinterest.com')) return 'pinterest';
+  else if (lowerUrl.includes('spotify.com')) return 'spotify';
+  else if (lowerUrl.includes('soundcloud.com')) return 'soundcloud';
+  else if (lowerUrl.includes('bandcamp.com')) return 'bandcamp';
+  else if (lowerUrl.includes('deezer.com')) return 'deezer';
+  else if (lowerUrl.includes('music.apple.com')) return 'apple-music';
+  else if (lowerUrl.includes('music.amazon.com')) return 'amazon-music';
+  else if (lowerUrl.includes('mixcloud.com')) return 'mixcloud';
+  else if (lowerUrl.includes('audiomack.com')) return 'audiomack';
+  else if (lowerUrl.includes('vimeo.com')) return 'vimeo';
+  else if (lowerUrl.includes('dailymotion.com')) return 'dailymotion';
+  else if (lowerUrl.includes('twitch.tv')) return 'twitch';
+  else if (lowerUrl.includes('reddit.com')) return 'reddit';
+  else if (lowerUrl.includes('linkedin.com')) return 'linkedin';
+  else if (lowerUrl.includes('tumblr.com')) return 'tumblr';
+  else if (lowerUrl.includes('vk.com')) return 'vk';
+  else if (lowerUrl.includes('bilibili.com')) return 'bilibili';
+  else if (lowerUrl.includes('snapchat.com')) return 'snapchat';
+  else return 'generic';
 }
 
 // Get media type based on platform
@@ -112,27 +81,18 @@ function getMediaType(platform) {
 // --------------------
 // INSTAGRAM ENDPOINT
 // --------------------
-// This endpoint uses instagram-url-direct and supports an optional "cookie" query parameter.
 app.get('/api/instagram', async (req, res) => {
   try {
     const { url, cookie } = req.query;
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
+    if (!url) return res.status(400).json({ error: 'URL is required' });
     console.log(`Processing Instagram URL: ${url}`);
-    
-    // Prepare headers; include cookie if provided
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     };
     if (cookie) {
       headers['Cookie'] = cookie;
     }
-    
-    // Use instagram-url-direct library to extract media URLs.
     const result = await instagramDirect(url, { headers });
-    
-    // Assume result has properties: type (video/image), media (array of media URLs), title, and optionally thumbnail.
     const formats = (result.media || []).map((m, index) => ({
       itag: `ig_${index}`,
       quality: 'Standard',
@@ -143,7 +103,6 @@ app.get('/api/instagram', async (req, res) => {
       container: result.type === 'video' ? 'mp4' : 'jpg',
       contentLength: 0,
     }));
-    
     res.json({
       title: result.title || 'Instagram Media',
       thumbnails: result.thumbnail ? [{ url: result.thumbnail, width: 480, height: 480 }] : [],
@@ -166,7 +125,8 @@ app.get('/api/pinterest', async (req, res) => {
     const { url } = req.query;
     if (!url) return res.status(400).json({ error: 'URL is required' });
     console.log(`Processing Pinterest URL: ${url}`);
-    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
+    const userAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
     const response = await fetch(url, {
       headers: {
         'User-Agent': userAgent,
@@ -184,16 +144,16 @@ app.get('/api/pinterest', async (req, res) => {
     
     // Attempt to detect Pinterest videos
     let videoUrls = [];
-    // Method A: og:video meta tag
+    // Method A: Look for og:video meta tag
     const ogVideoMatch = html.match(/<meta property="og:video" content="([^"]+)"/i);
     if (ogVideoMatch && ogVideoMatch[1]) videoUrls.push(ogVideoMatch[1]);
-    // Method B: <video> tags
+    // Method B: Look for <video> tags
     const videoTagRegex = /<video[^>]+src="([^"]+)"[^>]*>/g;
     let videoMatch;
     while ((videoMatch = videoTagRegex.exec(html)) !== null) {
       if (videoMatch[1]) videoUrls.push(videoMatch[1]);
     }
-    // Method C: Parse JSON for video information (e.g., video_list)
+    // Method C: Parse JSON blocks (e.g., "videos": {V_720P: {url:"..."}})
     const videoJsonMatches = html.match(/\{"videos".+?}\}/gs);
     if (videoJsonMatches) {
       videoJsonMatches.forEach(jsonString => {
@@ -204,7 +164,9 @@ app.get('/api/pinterest', async (req, res) => {
               if (variant.url) videoUrls.push(variant.url);
             });
           }
-        } catch (err) { /* ignore parse errors */ }
+        } catch (err) {
+          // ignore errors
+        }
       });
     }
     videoUrls = [...new Set(videoUrls)].filter(v => v.startsWith('http'));
@@ -236,7 +198,7 @@ app.get('/api/pinterest', async (req, res) => {
       });
     }
     
-    // Fallback: Use yt-dlp via youtube-dl-exec (binary set to yt-dlp)
+    // Fallback: Use yt-dlp (via youtube-dl-exec) with recode option to ensure MP4 output
     try {
       console.log('No direct video found; trying yt-dlp fallback for Pinterest.');
       const info = await youtubeDl(url, {
@@ -245,6 +207,7 @@ app.get('/api/pinterest', async (req, res) => {
         noCheckCertificates: true,
         noWarnings: true,
         preferFreeFormats: true,
+        recodeVideo: 'mp4',
         addHeader: [
           'referer:' + new URL(url).origin,
           'user-agent:' + userAgent,
@@ -286,7 +249,7 @@ app.get('/api/pinterest', async (req, res) => {
       console.error('yt-dlp fallback error for Pinterest:', ydError);
     }
     
-    // If video extraction fails, try images as fallback
+    // Fallback to images if no video detected
     let imageUrls = [];
     const originalImages = html.match(/https:\/\/i\.pinimg\.com\/originals\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif)/gi);
     if (originalImages && originalImages.length > 0) imageUrls = [...new Set(originalImages)];
@@ -677,6 +640,10 @@ app.get('/api/download', async (req, res) => {
         'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
       ],
     };
+    // If Pinterest video, force recoding to mp4 for playability
+    if (url.toLowerCase().includes('pinterest.com')) {
+      options.recodeVideo = 'mp4';
+    }
     if (itag && itag !== 'best') options.format = itag;
     try {
       await youtubeDl(url, options);
@@ -690,7 +657,8 @@ app.get('/api/download', async (req, res) => {
             Referer: new URL(url).origin,
           },
         });
-        if (!downloadResponse.ok) throw new Error(`Direct download failed with status: ${downloadResponse.status}`);
+        if (!downloadResponse.ok)
+          throw new Error(`Direct download failed with status: ${downloadResponse.status}`);
         const fileStream = fs.createWriteStream(tempFilePath);
         await new Promise((resolve, reject) => {
           downloadResponse.body.pipe(fileStream);
@@ -821,7 +789,8 @@ app.get('/api/direct', async (req, res) => {
     }
     try {
       const fetchResponse = await fetch(url, { headers, redirect: 'follow' });
-      if (!fetchResponse.ok) throw new Error(`Failed to fetch content: ${fetchResponse.status} ${fetchResponse.statusText}`);
+      if (!fetchResponse.ok)
+        throw new Error(`Failed to fetch content: ${fetchResponse.status} ${fetchResponse.statusText}`);
       contentType = fetchResponse.headers.get('content-type') || contentType;
       res.setHeader('Content-Type', contentType);
       if (contentLength > 0) res.setHeader('Content-Length', contentLength);
