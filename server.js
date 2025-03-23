@@ -4,7 +4,7 @@ import cors from 'cors';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
-// Only use yt-dlp as a fallback
+// Only use youtube-dl as a fallback
 import youtubeDl from 'youtube-dl-exec';
 import fs from 'fs';
 import path from 'path';
@@ -19,7 +19,7 @@ import instagramGetUrl from 'instagram-url-direct';
 // For Facebook
 const fbDownloader = require('fb-downloader');
 // Import the specialized YouTube handler
-import { extractYouTubeMedia } from './youtube-handler.js';
+import { extractYouTubeMedia, downloadYouTubeVideo } from './youtube-handler.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -1154,7 +1154,7 @@ app.get('/api/info', async (req, res) => {
   }
 });
 
-// Download endpoint - improved with better error handling
+// Download endpoint - improved with better handling for Pinterest and YouTube
 app.get('/api/download', async (req, res) => {
   try {
     const { url, itag } = req.query;
@@ -1164,7 +1164,161 @@ app.get('/api/download', async (req, res) => {
     }
 
     console.log(`Processing download - URL: ${url}, format: ${itag || 'best'}`);
+    
+    // Check if this is a Pinterest URL - use direct download instead of youtube-dl
+    if (url.includes('pinterest.com')) {
+      console.log('Pinterest URL detected, using direct download method');
+      
+      try {
+        // Get Pinterest info first to extract the actual media URL
+        const pinterestResponse = await fetchWithTimeout(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
+        
+        if (!pinterestResponse.ok) {
+          throw new Error(`Failed to get Pinterest info: ${pinterestResponse.status}`);
+        }
+        
+        const pinterestData = await pinterestResponse.json();
+        
+        // Get the best format URL
+        if (!pinterestData.formats || pinterestData.formats.length === 0) {
+          throw new Error('No media formats found in Pinterest response');
+        }
+        
+        // Get the direct media URL - use the first format which should be the highest quality
+        const directMediaUrl = pinterestData.formats[0].url;
+        
+        // Now do a direct download of this URL
+        console.log(`Using direct Pinterest media URL: ${directMediaUrl}`);
+        
+        // Generate a unique filename
+        const uniqueId = uuidv4();
+        const ext = pinterestData.mediaType === 'video' ? '.mp4' : '.jpg';
+        const tempFilePath = path.join(TEMP_DIR, `pinterest-${uniqueId}${ext}`);
+        
+        // Fetch the media directly
+        const mediaResponse = await fetch(directMediaUrl, {
+          headers: {
+            'User-Agent': getRandomUserAgent(),
+            'Referer': 'https://www.pinterest.com/',
+          }
+        });
+        
+        if (!mediaResponse.ok) {
+          throw new Error(`Failed to fetch Pinterest media: ${mediaResponse.status}`);
+        }
+        
+        // Save to temp file
+        const fileStream = fs.createWriteStream(tempFilePath);
+        await new Promise((resolve, reject) => {
+          mediaResponse.body.pipe(fileStream);
+          mediaResponse.body.on('error', reject);
+          fileStream.on('finish', resolve);
+        });
+        
+        // Check if file exists and has content
+        if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
+          throw new Error('Pinterest media download failed - empty or missing file');
+        }
+        
+        // Get file info
+        const stat = fs.statSync(tempFilePath);
+        
+        // Determine content type
+        let contentType = pinterestData.mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
+        
+        // Set headers for download
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="pinterest_media${ext}"`);
+        
+        // Stream the file and delete after sending
+        const outFileStream = fs.createReadStream(tempFilePath);
+        outFileStream.pipe(res);
+        
+        outFileStream.on('end', () => {
+          // Delete the temporary file
+          fs.unlink(tempFilePath, (err) => {
+            if (err) console.error('Error deleting temp file:', err);
+          });
+        });
+        
+        return; // Exit the function here
+      } catch (pinterestError) {
+        console.error('Pinterest direct download error:', pinterestError);
+        // Fall through to direct download as last resort
+        return res.redirect(`/api/direct?url=${encodeURIComponent(url)}`);
+      }
+    }
+    
+    // For YouTube, use our specialized download function
+    if (url.includes('youtube.com') || url.includes('youtu.be')) {
+      console.log('YouTube URL detected, using specialized download function');
+      
+      try {
+        // Generate a unique filename
+        const uniqueId = uuidv4();
+        const tempFilePath = path.join(TEMP_DIR, `youtube-${uniqueId}.mp4`);
+        
+        // Use our enhanced YouTube download function
+        const success = await downloadYouTubeVideo(url, tempFilePath, itag);
+        
+        if (!success) {
+          throw new Error('YouTube download failed');
+        }
+        
+        // Get info about the video to set a nice filename
+        let videoTitle = 'youtube_video';
+        try {
+          const videoInfo = await extractYouTubeMedia(url);
+          if (videoInfo && videoInfo.title) {
+            // Clean the title to make it safe for a filename
+            videoTitle = videoInfo.title
+              .replace(/[\/\\:*?"<>|]/g, '_') // Remove invalid filename chars
+              .replace(/\s+/g, '_')           // Replace spaces with underscores
+              .substring(0, 100);             // Limit length
+          }
+        } catch (e) {
+          console.error('Error getting video title:', e);
+        }
+        
+        // Check if file exists and has content
+        if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
+          throw new Error('YouTube download failed - empty or missing file');
+        }
+        
+        // Get file info
+        const stat = fs.statSync(tempFilePath);
+        
+        // Set headers for download
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Disposition', `attachment; filename="${videoTitle}.mp4"`);
+        
+        // Stream the file and delete after sending
+        const outFileStream = fs.createReadStream(tempFilePath);
+        outFileStream.pipe(res);
+        
+        outFileStream.on('end', () => {
+          // Delete the temporary file
+          fs.unlink(tempFilePath, (err) => {
+            if (err) console.error('Error deleting temp file:', err);
+          });
+        });
+        
+        return; // Exit the function here
+      } catch (youtubeError) {
+        console.error('YouTube specialized download error:', youtubeError);
+        
+        // If we get here, we'll try the normal youtube-dl fallback
+        // If all else fails, redirect to direct download
+        if (youtubeError.message.includes('429') || youtubeError.message.includes('bot')) {
+          console.log('YouTube rate limiting detected, redirecting to /api/direct');
+          return res.redirect(`/api/direct?url=${encodeURIComponent(url)}`);
+        }
+      }
+    }
 
+    // For other platforms or if the specialized methods fail, use youtube-dl
     // Generate a unique filename
     const uniqueId = uuidv4();
     const tempFilePath = path.join(TEMP_DIR, `download-${uniqueId}.mp4`);
@@ -1248,7 +1402,13 @@ app.get('/api/download', async (req, res) => {
 
   } catch (error) {
     console.error('Download error:', error);
-    res.status(500).json({ error: 'Download failed', details: error.message });
+    
+    // As a last resort, redirect to the direct endpoint
+    if (url) {
+      return res.redirect(`/api/direct?url=${encodeURIComponent(url)}`);
+    } else {
+      res.status(500).json({ error: 'Download failed', details: error.message });
+    }
   }
 });
 
