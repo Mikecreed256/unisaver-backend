@@ -132,7 +132,7 @@ function detectPlatform(url) {
   // Video Platforms
   else if (lowerUrl.includes('vimeo.com')) {
     return 'vimeo';
-  } else if (lowerUrl.includes('dailymotion.com')) {
+  } else if (lowerUrl.includes('dailymotion.com') || lowerUrl.includes('dai.ly')) {
     return 'dailymotion';
   } else if (lowerUrl.includes('twitch.tv')) {
     return 'twitch';
@@ -148,6 +148,8 @@ function detectPlatform(url) {
     return 'bilibili';
   } else if (lowerUrl.includes('snapchat.com')) {
     return 'snapchat';
+  } else if (lowerUrl.includes('youtube-nocookie.com')) {
+    return 'youtube'; // Handle privacy-enhanced YT embeds
   } else {
     return 'generic';
   }
@@ -2345,6 +2347,374 @@ async function handleTwitch(url, res) {
   }
 }
 
+// Threads (Meta) handler
+async function handleThreads(url, res) {
+  try {
+    console.log(`Processing Threads URL: ${url}`);
+    
+    // First try with youtube-dl as it might get updated to support Threads
+    try {
+      const info = await youtubeDl(url, {
+        dumpSingleJson: true,
+        noCheckCertificates: true,
+        noWarnings: true,
+        addHeader: ['referer:threads.net', 'user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1']
+      });
+      
+      if (info.formats && info.formats.length > 0) {
+        const formats = info.formats.map((format, index) => {
+          const isVideo = format.vcodec !== 'none';
+          
+          return {
+            itag: `threads_${index}`,
+            quality: format.format_note || (format.height ? `${format.height}p` : 'Standard'),
+            mimeType: isVideo ? `video/${format.ext || 'mp4'}` : `image/jpeg`,
+            url: format.url,
+            hasAudio: format.acodec !== 'none',
+            hasVideo: isVideo,
+            contentLength: format.filesize || 0,
+            container: format.ext || 'mp4'
+          };
+        });
+        
+        return res.json({
+          title: info.title || 'Threads Post',
+          thumbnails: info.thumbnails ? info.thumbnails.map(t => ({ 
+            url: t.url, 
+            width: t.width || 640, 
+            height: t.height || 640 
+          })) : [],
+          formats: formats,
+          platform: 'threads',
+          mediaType: formats[0].hasVideo ? 'video' : 'image',
+          uploader: info.uploader || null,
+          directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}`
+        });
+      }
+    } catch (ytdlError) {
+      console.error('Threads youtube-dl error:', ytdlError);
+    }
+    
+    // Direct extraction method since Threads is similar to Instagram
+    // Get the page content first with a mobile user agent
+    const mobileUserAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1';
+    
+    let response;
+    try {
+      response = await axios.get(url, {
+        headers: {
+          'User-Agent': mobileUserAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Referer': 'https://threads.net/'
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching Threads page:', error);
+      throw new Error('Failed to access Threads content');
+    }
+    
+    const html = response.data;
+    
+    // Extract JSON data which contains the media URLs
+    const formats = [];
+    let title = 'Threads Post';
+    let thumbnailUrl = '';
+    let isVideo = false;
+    let mediaUrl = '';
+    let userName = '';
+    
+    // Method 1: Find media in embedded JSON
+    const jsonDataRegexes = [
+      /<script type="application\/json" data-sjs>(.*?)<\/script>/s,
+      /window\.__additionalDataLoaded\('.*?',(.*?)\);<\/script>/s,
+      /"media":\s*\{.*?"uri":\s*"([^"]+)"/s
+    ];
+    
+    for (const regex of jsonDataRegexes) {
+      const jsonMatch = html.match(regex);
+      if (jsonMatch && jsonMatch[1]) {
+        try {
+          const data = JSON.parse(jsonMatch[1]);
+          
+          // Extract thread data - structure depends on how Threads formats their response
+          let threadData = null;
+          
+          // Navigate through possible data structures
+          if (data.require && Array.isArray(data.require)) {
+            // Find thread data in require array
+            for (const item of data.require) {
+              if (Array.isArray(item) && item[0] && item[0].includes('ThreadItem')) {
+                if (item[3] && item[3][0] && item[3][0].thread_items) {
+                  threadData = item[3][0].thread_items[0];
+                  break;
+                }
+              }
+            }
+          } else if (data.data && data.data.containing_thread) {
+            threadData = data.data.containing_thread.thread_items[0];
+          } else if (data.thread_items) {
+            threadData = data.thread_items[0];
+          }
+          
+          if (threadData) {
+            // Extract post content
+            if (threadData.post) {
+              const post = threadData.post;
+              
+              // Get caption/text
+              if (post.caption && post.caption.text) {
+                title = post.caption.text.length > 100 
+                  ? post.caption.text.slice(0, 97) + '...' 
+                  : post.caption.text;
+              }
+              
+              // Get username
+              if (post.user && post.user.username) {
+                userName = post.user.username;
+                if (title === 'Threads Post') {
+                  title = `@${userName}'s Threads Post`;
+                }
+              }
+              
+              // Get media
+              if (post.carousel_media && post.carousel_media.length > 0) {
+                // Handle carousel/multiple media
+                post.carousel_media.forEach((media, index) => {
+                  if (media.video_versions && media.video_versions.length > 0) {
+                    // It's a video
+                    isVideo = true;
+                    media.video_versions.forEach((video, videoIndex) => {
+                      formats.push({
+                        itag: `threads_carousel_video_${index}_${videoIndex}`,
+                        quality: `${video.height}p`,
+                        mimeType: 'video/mp4',
+                        url: video.url,
+                        hasAudio: true,
+                        hasVideo: true,
+                        contentLength: 0,
+                        container: 'mp4'
+                      });
+                    });
+                    
+                    // Use the first thumbnail as fallback
+                    if (!thumbnailUrl && media.image_versions2 && 
+                        media.image_versions2.candidates && 
+                        media.image_versions2.candidates.length > 0) {
+                      thumbnailUrl = media.image_versions2.candidates[0].url;
+                    }
+                  } else if (media.image_versions2 && 
+                             media.image_versions2.candidates && 
+                             media.image_versions2.candidates.length > 0) {
+                    // It's an image
+                    const images = media.image_versions2.candidates;
+                    // Sort by width descending to get highest quality first
+                    images.sort((a, b) => b.width - a.width);
+                    
+                    images.forEach((image, imageIndex) => {
+                      formats.push({
+                        itag: `threads_carousel_image_${index}_${imageIndex}`,
+                        quality: `${image.width}x${image.height}`,
+                        mimeType: 'image/jpeg',
+                        url: image.url,
+                        hasAudio: false,
+                        hasVideo: false,
+                        contentLength: 0,
+                        container: 'jpeg'
+                      });
+                    });
+                    
+                    // Use the first image as thumbnail if we don't have one yet
+                    if (!thumbnailUrl) {
+                      thumbnailUrl = images[0].url;
+                    }
+                  }
+                });
+              } else if (post.video_versions && post.video_versions.length > 0) {
+                // Single video
+                isVideo = true;
+                post.video_versions.forEach((video, videoIndex) => {
+                  formats.push({
+                    itag: `threads_video_${videoIndex}`,
+                    quality: `${video.height}p`,
+                    mimeType: 'video/mp4',
+                    url: video.url,
+                    hasAudio: true,
+                    hasVideo: true,
+                    contentLength: 0,
+                    container: 'mp4'
+                  });
+                });
+                
+                // Use image as thumbnail
+                if (post.image_versions2 && 
+                    post.image_versions2.candidates && 
+                    post.image_versions2.candidates.length > 0) {
+                  thumbnailUrl = post.image_versions2.candidates[0].url;
+                }
+              } else if (post.image_versions2 && 
+                         post.image_versions2.candidates && 
+                         post.image_versions2.candidates.length > 0) {
+                // Single image
+                const images = post.image_versions2.candidates;
+                // Sort by width descending
+                images.sort((a, b) => b.width - a.width);
+                
+                images.forEach((image, imageIndex) => {
+                  formats.push({
+                    itag: `threads_image_${imageIndex}`,
+                    quality: `${image.width}x${image.height}`,
+                    mimeType: 'image/jpeg',
+                    url: image.url,
+                    hasAudio: false,
+                    hasVideo: false,
+                    contentLength: 0,
+                    container: 'jpeg'
+                  });
+                });
+                
+                thumbnailUrl = images[0].url;
+              }
+            }
+            
+            if (formats.length > 0) {
+              break; // Successfully extracted media, no need to try other regex patterns
+            }
+          }
+        } catch (jsonError) {
+          console.error('Error parsing Threads JSON data:', jsonError);
+          // Continue to next regex pattern
+        }
+      }
+    }
+    
+    // Method 2: If JSON extraction failed, try to find media URLs directly in the HTML
+    if (formats.length === 0) {
+      // Look for video URLs
+      const videoUrlRegexes = [
+        /property="og:video" content="([^"]+)"/i,
+        /property="og:video:secure_url" content="([^"]+)"/i,
+        /video src="([^"]+)"/i,
+        /https:\/\/[^"']+\.cdninstagram\.com\/[^"']+\.mp4/g
+      ];
+      
+      for (const regex of videoUrlRegexes) {
+        const matches = html.match(regex);
+        if (matches) {
+          const videoUrls = Array.isArray(matches) && matches.length > 1 
+            ? matches 
+            : (matches[1] ? [matches[1]] : null);
+          
+          if (videoUrls) {
+            isVideo = true;
+            videoUrls.forEach((url, index) => {
+              formats.push({
+                itag: `threads_video_regex_${index}`,
+                quality: 'Standard',
+                mimeType: 'video/mp4',
+                url: url,
+                hasAudio: true,
+                hasVideo: true,
+                contentLength: 0,
+                container: 'mp4'
+              });
+            });
+            break;
+          }
+        }
+      }
+      
+      // If no videos found, look for images
+      if (formats.length === 0) {
+        const imageUrlRegexes = [
+          /property="og:image" content="([^"]+)"/i,
+          /https:\/\/[^"']+\.cdninstagram\.com\/[^"']+\.jpg/g
+        ];
+        
+        for (const regex of imageUrlRegexes) {
+          const matches = html.match(regex);
+          if (matches) {
+            const imageUrls = Array.isArray(matches) && matches.length > 1 
+              ? matches 
+              : (matches[1] ? [matches[1]] : null);
+            
+            if (imageUrls) {
+              imageUrls.forEach((url, index) => {
+                formats.push({
+                  itag: `threads_image_regex_${index}`,
+                  quality: 'Standard',
+                  mimeType: 'image/jpeg',
+                  url: url,
+                  hasAudio: false,
+                  hasVideo: false,
+                  contentLength: 0,
+                  container: 'jpeg'
+                });
+              });
+              
+              // Use first image as thumbnail
+              thumbnailUrl = imageUrls[0];
+              break;
+            }
+          }
+        }
+      }
+      
+      // Try to extract title if we didn't get it from JSON
+      if (title === 'Threads Post') {
+        const titleRegexes = [
+          /<meta property="og:title" content="([^"]+)"/i,
+          /<title>([^<]+)<\/title>/i
+        ];
+        
+        for (const regex of titleRegexes) {
+          const match = html.match(regex);
+          if (match && match[1]) {
+            title = match[1].replace(' on Threads', '').trim();
+            break;
+          }
+        }
+      }
+    }
+    
+    // If we found any media formats, return them
+    if (formats.length > 0) {
+      // Remove duplicates by URL
+      const uniqueFormats = [];
+      const seenUrls = new Set();
+      
+      for (const format of formats) {
+        if (!seenUrls.has(format.url)) {
+          seenUrls.add(format.url);
+          uniqueFormats.push(format);
+        }
+      }
+      
+      return res.json({
+        title: title,
+        thumbnails: thumbnailUrl ? [{ url: thumbnailUrl, width: 640, height: 640 }] : [],
+        formats: uniqueFormats,
+        platform: 'threads',
+        mediaType: isVideo ? 'video' : 'image',
+        uploader: userName || null,
+        directUrl: `/api/direct?url=${encodeURIComponent(uniqueFormats[0].url)}`
+      });
+    }
+    
+    // If all methods failed
+    return res.status(404).json({
+      error: 'Could not extract Threads media',
+      details: 'The post might be text-only, private, or Threads has changed their API'
+    });
+  } catch (error) {
+    console.error('Threads error:', error);
+    return res.status(500).json({ 
+      error: 'Threads processing failed', 
+      details: error.message 
+    });
+  }
+}
+
 // Platform-specific handlers object
 const platformHandlers = {
   'youtube': handleYouTube,
@@ -2352,6 +2722,7 @@ const platformHandlers = {
   'instagram': handleInstagram,
   'tiktok': handleTikTok,
   'twitter': handleTwitter,
+  'threads': handleThreads,
   'pinterest': handlePinterest,
   'spotify': handleSpotify,
   'soundcloud': handleSoundCloud,
