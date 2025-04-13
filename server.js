@@ -8,7 +8,6 @@ const axios = require('axios');
 // Add these lines at the top with your other imports
 const youtubeController = require('./controllers/youtubeController');
 const facebookController = require('./controllers/facebookController');
-const pinterestController = require('./controllers/pinterestController');
 // Import from your first codebase - updated for version compatibility
 const { alldown, threads } = require('shaon-media-downloader');
 const { ttdl, twitter, igdl } = require('btch-downloader');
@@ -1065,7 +1064,10 @@ app.post('/api/download-media', async (req, res) => {
             let response;
 
             if (platform === 'pinterest') {
-                response = await processPinterestUrl(url);
+                // Use dedicated Pinterest endpoint
+                const response = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
+                const data = await response.json();
+                return res.json(data);
             } else if (platform === 'facebook') {
                 response = await processFacebookUrl(url);
             } else if (platform === 'threads') {
@@ -1799,40 +1801,226 @@ app.get('/api/twitter', async (req, res) => {
         });
     }
 });
-// Pinterest endpoint
+
+// Improved Pinterest handler
 app.get('/api/pinterest', async (req, res) => {
-  const { url } = req.query;
-  if (!url) {
-    return res.status(400).json({ error: 'URL is required' });
-  }
-
-  try {
-    const pinterestData = await pinterestController.downloadPinterestMedia(url);
-
-    if (!pinterestData.imran || !pinterestData.imran.url) {
-      throw new Error('Invalid Pinterest data returned');
+    try {
+      const { url } = req.query;
+  
+      if (!url) {
+        return res.status(400).json({ error: 'URL is required' });
+      }
+  
+      console.log(`Processing Pinterest URL: ${url}`);
+  
+      // User agent for Pinterest requests
+      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36';
+  
+      // First, get the actual page to find image data
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        }
+      });
+  
+      if (!response.ok) {
+        throw new Error(`Failed to fetch Pinterest page: ${response.status} ${response.statusText}`);
+      }
+  
+      const html = await response.text();
+  
+      // Extract title
+      let title = 'Pinterest Image';
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch && titleMatch[1]) {
+        title = titleMatch[1].replace(' | Pinterest', '').trim();
+      }
+  
+      // Method 1: Find image URLs directly in the HTML
+      let imageUrls = [];
+  
+      // Look for high-res originals first
+      const originalImages = html.match(/https:\/\/i\.pinimg\.com\/originals\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif)/gi);
+      if (originalImages && originalImages.length > 0) {
+        imageUrls = [...new Set(originalImages)]; // Remove duplicates
+      }
+  
+      // If no originals, look for specific sizes (736x is common for Pinterest)
+      if (imageUrls.length === 0) {
+        const sizedImages = html.match(/https:\/\/i\.pinimg\.com\/[0-9]+x(?:\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif))/gi);
+        if (sizedImages && sizedImages.length > 0) {
+          imageUrls = [...new Set(sizedImages)]; // Remove duplicates
+        }
+      }
+  
+      // Method 2: Extract from JSON data
+      if (imageUrls.length === 0) {
+        const jsonMatch = html.match(/\{"resourceResponses":\[.*?\].*?\}/g);
+        if (jsonMatch && jsonMatch.length > 0) {
+          try {
+            const data = JSON.parse(jsonMatch[0]);
+            if (data.resourceResponses && data.resourceResponses.length > 0) {
+              const resources = data.resourceResponses[0].response?.data;
+  
+              if (resources) {
+                // Try to extract from pin data
+                if (resources.pin) {
+                  const pin = resources.pin;
+  
+                  // Update title if available
+                  if (pin.title) {
+                    title = pin.title;
+                  }
+  
+                  // Get images
+                  if (pin.images && pin.images.orig) {
+                    imageUrls.push(pin.images.orig.url);
+                  }
+  
+                  // Get all available sizes
+                  if (pin.images) {
+                    Object.values(pin.images).forEach(img => {
+                      if (img && img.url) {
+                        imageUrls.push(img.url);
+                      }
+                    });
+                  }
+                }
+  
+                // Extract from multiple pins in a board
+                if (resources.board?.pins) {
+                  resources.board.pins.forEach(pin => {
+                    if (pin.images && pin.images.orig) {
+                      imageUrls.push(pin.images.orig.url);
+                    }
+                  });
+                }
+              }
+            }
+          } catch (jsonError) {
+            console.error('Error parsing Pinterest JSON data:', jsonError);
+          }
+        }
+      }
+  
+      // Method 3: Look for specialized Pinterest schema data
+      if (imageUrls.length === 0) {
+        const schemaMatch = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s);
+        if (schemaMatch && schemaMatch[1]) {
+          try {
+            const schemaData = JSON.parse(schemaMatch[1]);
+            if (schemaData.image) {
+              if (Array.isArray(schemaData.image)) {
+                imageUrls = imageUrls.concat(schemaData.image);
+              } else {
+                imageUrls.push(schemaData.image);
+              }
+            }
+  
+            // Update title if available
+            if (schemaData.name) {
+              title = schemaData.name;
+            }
+          } catch (schemaError) {
+            console.error('Error parsing Pinterest schema data:', schemaError);
+          }
+        }
+      }
+  
+      // Method 4: Extract from og:image meta tags
+      if (imageUrls.length === 0) {
+        const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+        if (ogImageMatch && ogImageMatch[1]) {
+          imageUrls.push(ogImageMatch[1]);
+        }
+      }
+  
+      // Fallback for when no images are found
+      if (imageUrls.length === 0) {
+        return res.status(404).json({
+          error: 'No images found on this Pinterest page',
+          details: 'Try opening the pin in a browser and copying the image URL directly'
+        });
+      }
+  
+      // Remove duplicates and filter out invalid URLs
+      imageUrls = [...new Set(imageUrls)].filter(url =>
+        url && url.startsWith('http') &&
+        /\.(jpg|jpeg|png|gif|webp)/i.test(url)
+      );
+  
+      // Sort by quality (prioritize originals and larger sizes)
+      imageUrls.sort((a, b) => {
+        // Original images are preferred
+        if (a.includes('/originals/') && !b.includes('/originals/')) return -1;
+        if (!a.includes('/originals/') && b.includes('/originals/')) return 1;
+  
+        // Check for resolution indicators
+        const sizesA = a.match(/\/([0-9]+)x\//);
+        const sizesB = b.match(/\/([0-9]+)x\//);
+  
+        if (sizesA && sizesB) {
+          return parseInt(sizesB[1]) - parseInt(sizesA[1]); // Higher resolution first
+        }
+  
+        return b.length - a.length; // Longer URLs usually contain more metadata
+      });
+  
+      // Create format objects for each image
+      const formats = imageUrls.map((url, index) => {
+        // Try to determine quality from URL
+        let quality = 'Standard';
+  
+        if (url.includes('/originals/')) {
+          quality = 'Original';
+        } else {
+          const sizeMatch = url.match(/\/([0-9]+)x\//);
+          if (sizeMatch && sizeMatch[1]) {
+            quality = `${sizeMatch[1]}px`;
+          }
+        }
+  
+        // Determine image format
+        let format = 'jpg';
+        if (url.toLowerCase().endsWith('.png')) format = 'png';
+        else if (url.toLowerCase().endsWith('.gif')) format = 'gif';
+        else if (url.toLowerCase().endsWith('.webp')) format = 'webp';
+  
+        return {
+          itag: `pin_${index}`,
+          quality: quality,
+          mimeType: `image/${format}`,
+          url: url,
+          hasAudio: false,
+          hasVideo: false,
+          contentLength: 0,
+          container: format
+        };
+      });
+  
+      // Create a direct download URL for the best image
+      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(imageUrls[0])}`;
+  
+      // Return the image info
+      res.json({
+        title: title,
+        thumbnails: [{ url: imageUrls[0], width: 480, height: 480 }],
+        formats: formats,
+        platform: 'pinterest',
+        mediaType: 'image',
+        directUrl: directDownloadUrl
+      });
+  
+    } catch (error) {
+      console.error('Pinterest error:', error);
+      res.status(500).json({ error: 'Pinterest processing failed', details: error.message });
     }
-
-    return res.json({
-      title: pinterestData.imran.title || 'Pinterest Image',
-      formats: [{
-        itag: 'pin_0',
-        quality: 'Original Quality',
-        mimeType: 'image/jpeg',
-        url: pinterestData.imran.url,
-        hasAudio: false,
-        hasVideo: false,
-      }],
-      thumbnails: [{ url: pinterestData.imran.thumbnail || pinterestData.imran.url }],
-      platform: 'pinterest',
-      mediaType: 'image',
-    });
-  } catch (error) {
-    console.error('Pinterest endpoint error:', error);
-    res.status(500).json({ error: 'Pinterest processing failed', details: error.message });
-  }
-});
-
+  });
+  
 // Facebook endpoint
 // Replace your existing Facebook endpoint in main server with this one from your old server
 // Updated Facebook endpoint with mobile URL handling integration
