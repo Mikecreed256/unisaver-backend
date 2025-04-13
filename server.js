@@ -1653,13 +1653,200 @@ app.get('/api/pinterest', async (req, res) => {
       }
   
       const html = await response.text();
+      console.log(`Pinterest HTML retrieved: ${html.length} bytes`);
   
       // Extract title
-      let title = 'Pinterest Image';
+      let title = 'Pinterest Media';
       const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
       if (titleMatch && titleMatch[1]) {
         title = titleMatch[1].replace(' | Pinterest', '').trim();
       }
+  
+      // ==========================================
+      // NEW CODE: Video detection section
+      // ==========================================
+      console.log("Looking for video content first...");
+  
+      // Multiple patterns to find Pinterest videos
+      const videoPatterns = [
+        /"video_url":"([^"]+)"/i,                     // Common pattern
+        /"contentUrl":\s*"(https:\/\/v\.pinimg\.com[^"]+)"/i, // From JSON-LD
+        /"contentUrl":\s*"([^"]+\.mp4[^"]*)"/i,       // Generic mp4 in JSON-LD
+        /'contentUrl':\s*'([^']+\.mp4[^']*)'/i,       // Alternative quotes
+        /<meta\s+property="og:video"\s+content="([^"]+)"/i,  // Open Graph video tag
+        /<meta\s+property="og:video:url"\s+content="([^"]+)"/i,  // OG video URL
+        /"v_hd":\s*\{[^}]*"url":\s*"([^"]+)"/i,       // HD video URL in JSON
+        /"v_sd":\s*\{[^}]*"url":\s*"([^"]+)"/i,       // SD video URL in JSON
+        /https:\/\/v\.pinimg\.com\/videos\/mc\/[^"'\s]+\.mp4/i  // Direct pattern search
+      ];
+  
+      // Try each pattern
+      let videoUrl = null;
+      for (const pattern of videoPatterns) {
+        const match = html.match(pattern);
+        if (match && match[1]) {
+          videoUrl = match[1]
+            .replace(/\\u002F/g, '/')
+            .replace(/\\\//g, '/')
+            .replace(/\\/g, '')
+            .replace(/&amp;/g, '&');
+          console.log(`Found potential video URL using pattern ${pattern}: ${videoUrl}`);
+          break;
+        }
+      }
+  
+      // If no video URL found with regex, try to look in JSON data chunks
+      if (!videoUrl) {
+        console.log("No video found with regex patterns, looking in JSON data...");
+        
+        // Look for JSON data in script tags
+        const jsonScripts = html.match(/<script[^>]*type="application\/json"[^>]*>([^<]+)<\/script>/g);
+        if (jsonScripts) {
+          for (const scriptTag of jsonScripts) {
+            try {
+              const jsonContent = scriptTag.match(/<script[^>]*>([^<]+)<\/script>/)[1];
+              const data = JSON.parse(jsonContent);
+              
+              // Navigate through the JSON data looking for video URLs
+              // This is a recursive function to search deeply nested objects
+              const findVideoUrls = (obj, path = '') => {
+                if (!obj) return null;
+                
+                // If this is a string that looks like a video URL, return it
+                if (typeof obj === 'string' && 
+                    (obj.includes('v.pinimg.com') || 
+                     obj.includes('.mp4') || 
+                     obj.includes('/videos/')) &&
+                    obj.startsWith('http')) {
+                  console.log(`Found video URL in JSON at path ${path}: ${obj}`);
+                  return obj;
+                }
+                
+                // If it's an object, search its properties
+                if (typeof obj === 'object') {
+                  // First check some common key names
+                  const videoKeys = ['video_url', 'videoUrl', 'mp4Url', 'contentUrl', 'url'];
+                  for (const key of videoKeys) {
+                    if (obj[key] && typeof obj[key] === 'string' && 
+                        (obj[key].includes('.mp4') || 
+                         obj[key].includes('v.pinimg.com') || 
+                         obj[key].includes('/videos/'))) {
+                      console.log(`Found video URL in JSON with key ${key}: ${obj[key]}`);
+                      return obj[key];
+                    }
+                  }
+                  
+                  // Then recursively search all properties
+                  for (const key in obj) {
+                    const result = findVideoUrls(obj[key], `${path}.${key}`);
+                    if (result) return result;
+                  }
+                }
+                
+                // If it's an array, search its items
+                if (Array.isArray(obj)) {
+                  for (let i = 0; i < obj.length; i++) {
+                    const result = findVideoUrls(obj[i], `${path}[${i}]`);
+                    if (result) return result;
+                  }
+                }
+                
+                return null;
+              };
+              
+              const foundUrl = findVideoUrls(data);
+              if (foundUrl) {
+                videoUrl = foundUrl
+                  .replace(/\\u002F/g, '/')
+                  .replace(/\\\//g, '/')
+                  .replace(/\\/g, '')
+                  .replace(/&amp;/g, '&');
+                break;
+              }
+            } catch (jsonError) {
+              console.warn(`Error parsing JSON in script tag: ${jsonError.message}`);
+              // Continue to next script tag
+            }
+          }
+        }
+      }
+  
+      // If video URL found, validate and prepare response
+      if (videoUrl) {
+        console.log(`Found Pinterest video URL: ${videoUrl}`);
+        
+        // Get thumbnail for the video
+        let thumbnail = '';
+        const thumbnailPatterns = [
+          /"image_url":"([^"]+)"/i,
+          /"poster_images":\["([^"]+)"\]/i,
+          /<meta property="og:image" content="([^"]+)"/i,
+          /"thumbnails":\s*\{[^}]*"orig":\s*"([^"]+)"/i
+        ];
+        
+        for (const pattern of thumbnailPatterns) {
+          const match = html.match(pattern);
+          if (match && match[1]) {
+            thumbnail = match[1].replace(/\\/g, '');
+            console.log(`Found video thumbnail: ${thumbnail}`);
+            break;
+          }
+        }
+        
+        // Always make a validation call to ensure this is really a video
+        try {
+          const videoCheck = await fetch(videoUrl, {
+            method: 'HEAD',
+            headers: { 
+              'User-Agent': userAgent,
+              'Referer': 'https://www.pinterest.com/'
+            }
+          });
+          
+          const contentType = videoCheck.headers.get('content-type');
+          console.log(`Video validation check: status=${videoCheck.status}, content-type=${contentType}`);
+          
+          if (videoCheck.ok) {
+            // If content type is not video, but URL ends with .mp4, trust the extension
+            const isVideoContent = contentType && contentType.includes('video');
+            const hasVideoExtension = videoUrl.toLowerCase().includes('.mp4');
+            
+            if (!isVideoContent && !hasVideoExtension) {
+              console.warn(`Warning: URL doesn't appear to be a video (${contentType})`);
+              // Continue anyway - Pinterest sometimes serves videos with incorrect content types
+            }
+          }
+        } catch (validationError) {
+          console.warn(`Video validation error: ${validationError.message}`);
+          // Continue anyway, validation is just a precaution
+        }
+        
+        // Return video data
+        return res.json({
+          title: title,
+          thumbnails: [{ url: thumbnail || 'https://via.placeholder.com/300x150', width: 480, height: 480 }],
+          formats: [{
+            itag: 'pin_video_0',
+            quality: 'Original Quality',
+            mimeType: 'video/mp4',
+            url: videoUrl,
+            hasAudio: true,
+            hasVideo: true,
+            contentLength: 0,
+            container: 'mp4'
+          }],
+          platform: 'pinterest',
+          mediaType: 'video',
+          directUrl: `/api/direct?url=${encodeURIComponent(videoUrl)}&referer=pinterest.com`,
+          // Include the thumbnail URL specifically for clients that need it
+          thumbnailUrl: thumbnail || 'https://via.placeholder.com/300x150'
+        });
+      }
+      
+      console.log("No video found, looking for images...");
+      // ==========================================
+      // END OF NEW CODE
+      // ==========================================
   
       // Method 1: Find image URLs directly in the HTML
       let imageUrls = [];
@@ -1763,8 +1950,8 @@ app.get('/api/pinterest', async (req, res) => {
       // Fallback for when no images are found
       if (imageUrls.length === 0) {
         return res.status(404).json({
-          error: 'No images found on this Pinterest page',
-          details: 'Try opening the pin in a browser and copying the image URL directly'
+          error: 'No images or videos found on this Pinterest page',
+          details: 'Try opening the pin in a browser and copying the URL directly'
         });
       }
   
@@ -1824,7 +2011,7 @@ app.get('/api/pinterest', async (req, res) => {
       });
   
       // Create a direct download URL for the best image
-      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(imageUrls[0])}`;
+      const directDownloadUrl = `/api/direct?url=${encodeURIComponent(imageUrls[0])}&referer=pinterest.com`;
   
       // Return the image info
       res.json({
@@ -2043,88 +2230,56 @@ app.get('/api/direct', async (req, res) => {
 // Right after the URL trimming section in the existing direct endpoint
 // Add this code to your /api/direct endpoint
 // Right after your Facebook handling section but before the general download logic
-
 // Special handling for Pinterest videos
-if (url.includes('pinterest.com') || url.includes('pinimg.com') || url.includes('v.pinimg.com')) {
-    console.log('Detected Pinterest URL, applying specialized handling');
+if (url.includes('v.pinimg.com') || (url.includes('pinimg.com') && url.includes('.mp4'))) {
+    console.log('Pinterest video URL detected, applying special handling');
     
-    // Set up Pinterest-specific headers
     const pinterestHeaders = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Range': 'bytes=0-',  // This helps with some video streams
-        'Referer': 'https://www.pinterest.com/',
-        'Origin': 'https://www.pinterest.com',
-        'Sec-Fetch-Dest': 'video',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'cross-site',
-        'Connection': 'keep-alive'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Range': 'bytes=0-',  // Critical for video streaming
+      'Referer': 'https://www.pinterest.com/',
+      'Origin': 'https://www.pinterest.com',
+      'Sec-Fetch-Dest': 'video',
+      'Sec-Fetch-Mode': 'cors', 
+      'Sec-Fetch-Site': 'cross-site'
     };
     
+    // Clean the URL - Pinterest often has escaped characters
+    url = url
+      .replace(/\\u002F/g, '/')
+      .replace(/\\\//g, '/')
+      .replace(/\\/g, '')
+      .replace(/&amp;/g, '&');
+    
+    console.log(`Using cleaned Pinterest video URL: ${url}`);
+    
     try {
-        console.log(`Downloading Pinterest video using specialized approach: ${url}`);
-        
-        // Clean the URL - Pinterest often has escaped characters
-        const cleanUrl = url.replace(/\\u002F/g, '/').replace(/\\\//g, '/').replace(/\\/g, '');
-        console.log(`Cleaned Pinterest URL: ${cleanUrl}`);
-        
-        // For Pinterest, we'll try direct download with proper headers
-        const tempFilePath = path.join(TEMP_DIR, `pinterest-${Date.now()}.mp4`);
-        
-        const downloadResponse = await fetch(cleanUrl, {
-            headers: pinterestHeaders,
-            redirect: 'follow'
-        });
-        
-        if (!downloadResponse.ok) {
-            throw new Error(`Direct download failed with status: ${downloadResponse.status}`);
-        }
-        
-        // Check content type to make sure we're getting a video
-        const contentType = downloadResponse.headers.get('content-type');
-        console.log(`Pinterest content type: ${contentType}`);
-        
-        const fileStream = fs.createWriteStream(tempFilePath);
-        await new Promise((resolve, reject) => {
-            downloadResponse.body.pipe(fileStream);
-            downloadResponse.body.on('error', reject);
-            fileStream.on('finish', resolve);
-        });
-        
-        // Verify we got a valid file (not just a tiny error file)
-        const fileSize = fs.statSync(tempFilePath).size;
-        if (fileSize < 10000) {
-            throw new Error(`Downloaded file is too small (${fileSize} bytes), likely not a valid video`);
-        }
-        
-        console.log(`Successfully downloaded Pinterest video: ${tempFilePath}`);
-        
-        // Set appropriate headers for the response
-        res.setHeader('Content-Length', fileSize);
-        res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Content-Disposition', `attachment; filename="pinterest-video.mp4"`);
-        
-        // Stream the file back to the client
-        const responseStream = fs.createReadStream(tempFilePath);
-        responseStream.pipe(res);
-        
-        // Clean up the temporary file once we're done
-        responseStream.on('end', () => {
-            fs.unlink(tempFilePath, (err) => {
-                if (err) console.error('Error deleting temp file:', err);
-            });
-        });
-        
-        // Return early as we've handled the response
-        return;
-        
-    } catch (pinterestDownloadError) {
-        console.error(`Pinterest specialized download failed: ${pinterestDownloadError.message}`);
-        // Continue with normal download logic as fallback
+      const downloadResp = await fetch(url, {
+        headers: pinterestHeaders,
+        redirect: 'follow'
+      });
+      
+      if (!downloadResp.ok) {
+        throw new Error(`Failed to fetch Pinterest video: ${downloadResp.status}`);
+      }
+      
+      const contentType = downloadResp.headers.get('content-type') || 'video/mp4';
+      console.log(`Pinterest video content type: ${contentType}`);
+      
+      let outputFilename = filename || 'pinterest-video.mp4';
+      
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
+      
+      downloadResp.body.pipe(res);
+      return; // Exit the function early
+    } catch (error) {
+      console.error('Pinterest video download error:', error);
+      // Continue with normal processing as fallback
     }
-}
+  }
 // Special handling for Facebook Mobile sharing URLs
     if (url.includes('m.facebook.com/share/v/')) {
         console.log(`Facebook mobile sharing URL detected: ${url}`);
