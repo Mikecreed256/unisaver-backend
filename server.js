@@ -223,18 +223,17 @@ const formatData = async (platform, data) => {
                 source: platform,
             };
         }
-
         case 'pinterest': {
-            console.info("Data Formatting: Pinterest data formatted successfully.");
+            console.info("Data Formatting: Pinterest is handled by dedicated endpoint.");
+            // Use a generic format in case this is still called somewhere
             return {
-                title: data.imran?.title || 'Untitled Image',
-                url: data.imran?.url || '',
-                thumbnail: data.imran?.url || placeholderThumbnail,
+                title: data.title || 'Pinterest Image',
+                url: data.url || '',
+                thumbnail: data.thumbnail || placeholderThumbnail,
                 sizes: ['Original Quality'],
                 source: platform,
             };
         }
-
         case 'tiktok':
             console.log("Processing TikTok data...");
             return {
@@ -1064,10 +1063,13 @@ app.post('/api/download-media', async (req, res) => {
             let response;
 
             if (platform === 'pinterest') {
-                // Use dedicated Pinterest endpoint
-                const response = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
-                const data = await response.json();
-                return res.json(data);
+                // Use our dedicated Pinterest endpoint instead of processPinterestUrl
+                console.log(`Using dedicated Pinterest endpoint for: ${url}`);
+                const pinterestResponse = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
+                if (!pinterestResponse.ok) {
+                    throw new Error(`Pinterest endpoint returned status: ${pinterestResponse.status}`);
+                }
+                response = await pinterestResponse.json();
             } else if (platform === 'facebook') {
                 response = await processFacebookUrl(url);
             } else if (platform === 'threads') {
@@ -1092,215 +1094,6 @@ app.post('/api/download-media', async (req, res) => {
         }
     }
 });
-
-// Pinterest Handler (from your implementation)
-// Replace your existing processPinterestUrl function with this enhanced version
-async function processPinterestUrl(url) {
-    console.log(`Processing Pinterest URL: ${url}`);
-
-    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-    // Fetch the Pinterest page with proper headers
-    const response = await fetch(url, {
-        headers: {
-            'User-Agent': userAgent,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-        },
-    });
-
-    if (!response.ok) {
-        throw new Error(`Failed to fetch Pinterest page: ${response.status}`);
-    }
-
-    const html = await response.text();
-    console.log(`Pinterest HTML retrieved: ${html.length} bytes`);
-
-    // Extract title
-    let title = 'Pinterest Media';
-    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-    if (titleMatch && titleMatch[1]) {
-        title = titleMatch[1].replace(' | Pinterest', '').trim();
-    }
-
-    // FIRST - Check for video content
-    // Videos are preferred if available
-    const videoUrlMatches = html.match(/"video_url":"([^"]+)"/i);
-    if (videoUrlMatches && videoUrlMatches[1]) {
-        let videoUrl = videoUrlMatches[1].replace(/\\/g, '');
-        console.log(`Pinterest video URL found: ${videoUrl}`);
-
-        // Validate video URL
-        if (!videoUrl.includes('.mp4')) {
-            console.warn("Pinterest video URL doesn't end with .mp4, adding validation");
-
-            // Try to validate the video URL
-            try {
-                const videoCheck = await fetch(videoUrl, {
-                    method: 'HEAD',
-                    headers: { 'User-Agent': userAgent }
-                });
-
-                if (!videoCheck.ok || !videoCheck.headers.get('content-type')?.includes('video')) {
-                    console.warn(`Pinterest video validation failed: ${videoCheck.status}`);
-                    // Continue to image extraction since video validation failed
-                } else {
-                    console.log("Pinterest video URL validated successfully");
-
-                    // Get thumbnail
-                    let thumbnail = '';
-                    const thumbnailMatches = html.match(/"image_url":"([^"]+)"/i) ||
-                        html.match(/"poster_images":\["([^"]+)"\]/i);
-                    if (thumbnailMatches && thumbnailMatches[1]) {
-                        thumbnail = thumbnailMatches[1].replace(/\\/g, '');
-                    }
-
-                    return {
-                        success: true,
-                        data: {
-                            title,
-                            url: videoUrl,
-                            thumbnail: thumbnail || 'https://via.placeholder.com/300x150',
-                            sizes: ['Original Quality'],
-                            source: 'pinterest',
-                        }
-                    };
-                }
-            } catch (error) {
-                console.warn(`Pinterest video validation error: ${error.message}`);
-                // Continue to image extraction
-            }
-        } else {
-            // URL ends with .mp4, assume it's valid
-            let thumbnail = '';
-            const thumbnailMatches = html.match(/"image_url":"([^"]+)"/i) ||
-                html.match(/"poster_images":\["([^"]+)"\]/i);
-            if (thumbnailMatches && thumbnailMatches[1]) {
-                thumbnail = thumbnailMatches[1].replace(/\\/g, '');
-            }
-
-            return {
-                success: true,
-                data: {
-                    title,
-                    url: videoUrl,
-                    thumbnail: thumbnail || 'https://via.placeholder.com/300x150',
-                    sizes: ['Original Quality'],
-                    source: 'pinterest',
-                }
-            };
-        }
-    }
-
-    // SECOND - Handle as images
-    console.log("No video found, looking for images...");
-    let imageUrls = [];
-
-    // Method 1: Look for high-res originals (most reliable)
-    const originalImages = html.match(/https:\/\/i\.pinimg\.com\/originals\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif|webp)/gi);
-    if (originalImages && originalImages.length > 0) {
-        console.log(`Found ${originalImages.length} original Pinterest images`);
-        imageUrls = [...new Set(originalImages)];
-    }
-
-    // Method 2: Look for other pinned images if no originals
-    if (imageUrls.length === 0) {
-        console.log("No original images found, looking for sized images");
-        const sizedImages = html.match(/https:\/\/i\.pinimg\.com\/[0-9]+x(?:\/[a-zA-Z0-9\/\._-]+\.(?:jpg|jpeg|png|gif|webp))/gi);
-        if (sizedImages && sizedImages.length > 0) {
-            console.log(`Found ${sizedImages.length} sized Pinterest images`);
-            imageUrls = [...new Set(sizedImages)];
-        }
-    }
-
-    // Method 3: Look for OG image meta tag
-    if (imageUrls.length === 0) {
-        console.log("No sized images found, looking for OG image");
-        const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
-        if (ogImageMatch && ogImageMatch[1]) {
-            console.log(`Found OG image: ${ogImageMatch[1]}`);
-            imageUrls.push(ogImageMatch[1]);
-        }
-    }
-
-    // Method 4: Search for any image URLs in JSON data
-    if (imageUrls.length === 0) {
-        console.log("No OG image found, looking in JSON data");
-        const jsonMatch = html.match(/\{\"name\":\"Pinterest\",.*?\}/);
-        if (jsonMatch) {
-            try {
-                const jsonData = JSON.parse(jsonMatch[0]);
-                if (jsonData.image) {
-                    console.log(`Found image in JSON data: ${jsonData.image}`);
-                    imageUrls.push(jsonData.image);
-                }
-            } catch (error) {
-                console.warn(`Error parsing JSON data: ${error.message}`);
-            }
-        }
-    }
-
-    if (imageUrls.length === 0) {
-        throw new Error('No images found on this Pinterest page');
-    }
-
-    // Remove duplicates and only keep valid media URLs
-    imageUrls = [...new Set(imageUrls)]
-        .filter(url => url.startsWith('http'))
-        .filter(url => /\.(jpg|jpeg|png|gif|webp)($|\?)/i.test(url));
-
-    if (imageUrls.length === 0) {
-        throw new Error('No valid image URLs found on this Pinterest page');
-    }
-
-    // Sort by likely quality: originals first, then by URL length (more params often means higher quality)
-    imageUrls.sort((a, b) => {
-        if (a.includes('/originals/') && !b.includes('/originals/')) return -1;
-        if (!a.includes('/originals/') && b.includes('/originals/')) return 1;
-        return b.length - a.length;
-    });
-
-    // Get the best image URL
-    const bestImageUrl = imageUrls[0];
-    console.log(`Selected best Pinterest image URL: ${bestImageUrl}`);
-
-    // Validate image URL
-    try {
-        const imgCheck = await fetch(bestImageUrl, {
-            method: 'HEAD',
-            headers: { 'User-Agent': userAgent }
-        });
-
-        if (!imgCheck.ok) {
-            console.error(`Image validation failed: ${imgCheck.status}`);
-            throw new Error(`Pinterest image URL returned status ${imgCheck.status}`);
-        }
-
-        const contentType = imgCheck.headers.get('content-type');
-        if (!contentType || !contentType.includes('image')) {
-            console.error(`URL is not an image: ${contentType}`);
-            throw new Error('Pinterest URL does not point to a valid image');
-        }
-
-        console.log(`Pinterest image validated successfully: ${contentType}`);
-    } catch (error) {
-        console.warn(`Pinterest image validation error: ${error.message}`);
-        // Continue anyway, maybe the client can still handle it
-    }
-
-    return {
-        success: true,
-        data: {
-            title,
-            url: bestImageUrl,
-            thumbnail: bestImageUrl,
-            sizes: ['Original Quality'],
-            source: 'pinterest',
-        }
-    };
-}
 
 // Facebook Handler (from your implementation)
 async function processFacebookUrl(url) {
@@ -1551,10 +1344,6 @@ async function processGenericUrlWithYtdl(url, platform) {
         throw error;
     }
 }
-
-// Implement the API endpoints that your Flutter app expects
-
-// API info endpoint for platform detection
 app.get('/api/info', async (req, res) => {
     const { url } = req.query;
 
@@ -1571,7 +1360,26 @@ app.get('/api/info', async (req, res) => {
             return res.status(400).json({ error: 'Unsupported platform' });
         }
 
-        // Call our internal download function
+        // ADD THIS SECTION: Special handling for Pinterest
+        if (platform === 'pinterest') {
+            console.log('Using dedicated Pinterest endpoint');
+            try {
+                // Use our dedicated Pinterest endpoint
+                const pinterestResponse = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
+                
+                if (!pinterestResponse.ok) {
+                    throw new Error(`Pinterest endpoint returned status: ${pinterestResponse.status}`);
+                }
+                
+                // Our Pinterest endpoint already returns data in the expected format
+                return res.json(await pinterestResponse.json());
+            } catch (pinterestError) {
+                console.error('Pinterest endpoint error:', pinterestError);
+                // If Pinterest endpoint fails, continue with the regular flow
+            }
+        }
+
+        // Call our internal download function (original code continues here)
         const response = await fetch(`http://localhost:${PORT}/api/download-media`, {
             method: 'POST',
             headers: {
@@ -1619,6 +1427,21 @@ app.get('/api/info', async (req, res) => {
         // Fall back to youtube-dl for all platforms
         try {
             const platform = identifyPlatform(url);
+            
+            // For Pinterest, make one last attempt with our dedicated endpoint
+            if (platform === 'pinterest') {
+                try {
+                    console.log('Attempting Pinterest endpoint as fallback');
+                    const pinterestResponse = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
+                    if (pinterestResponse.ok) {
+                        return res.json(await pinterestResponse.json());
+                    }
+                } catch (pinterestFallbackError) {
+                    console.warn('Pinterest fallback also failed:', pinterestFallbackError);
+                    // Continue to generic fallback
+                }
+            }
+            
             const isAudioPlatform = ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
                 'amazon_music', 'mixcloud', 'audiomack'].includes(platform);
 
@@ -1801,8 +1624,6 @@ app.get('/api/twitter', async (req, res) => {
         });
     }
 });
-
-// Improved Pinterest handler
 app.get('/api/pinterest', async (req, res) => {
     try {
       const { url } = req.query;
@@ -2020,7 +1841,6 @@ app.get('/api/pinterest', async (req, res) => {
       res.status(500).json({ error: 'Pinterest processing failed', details: error.message });
     }
   });
-  
 // Facebook endpoint
 // Replace your existing Facebook endpoint in main server with this one from your old server
 // Updated Facebook endpoint with mobile URL handling integration
@@ -2457,111 +2277,95 @@ app.get('/api/download', async (req, res) => {
     try {
         let { url, itag } = req.query;
         // Add this special Twitter handling inside your /api/download endpoint
-// Add this after the "url = url.trim();" line but before the rest of the download logic
-// Add this special Pinterest handling inside your /api/download endpoint
-// Place this after the Twitter handling code but before the rest of the download logic
-
 // Special handling for Pinterest URLs
-// Add this inside your download endpoint, after the url.trim() line
-
-// Special handling for Pinterest URLs
-        if (url.includes('pinterest.com') || url.includes('pin.it')) {
-            console.log('Pinterest URL detected, resolving to direct media URL...');
-            try {
-                // Process the Pinterest URL to get the direct media URL
-                const pinterestData = await processPinterestUrl(url);
-
-                if (pinterestData && pinterestData.success && pinterestData.data && pinterestData.data.url) {
-                    // Use the direct URL found by the Pinterest processor
-                    const directUrl = pinterestData.data.url;
-                    console.log(`Resolved Pinterest URL to direct media: ${directUrl}`);
-
-                    // Verify this is actually a media URL
-                    if (!/\.(jpg|jpeg|png|gif|webp|mp4)($|\?)/i.test(directUrl)) {
-                        console.warn(`Warning: Pinterest URL doesn't end with a media extension: ${directUrl}`);
-                    }
-
-                    // Update the URL to the direct media URL
-                    url = directUrl;
-
-                    // Skip youtube-dl for Pinterest and download directly
-                    try {
-                        console.log('Downloading Pinterest media directly...');
-                        const fileExt = directUrl.match(/\.([^.\?]+)($|\?)/i)?.[1] || 'jpg';
-                        const tempFilePath = path.join(TEMP_DIR, `pinterest-${Date.now()}.${fileExt}`);
-
-                        const downloadResponse = await fetch(directUrl, {
-                            headers: {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                                'Referer': 'https://www.pinterest.com/',
-                                'Accept': 'image/*, video/*, */*',
-                                'Origin': 'https://www.pinterest.com'
-                            },
-                        });
-
-                        if (!downloadResponse.ok) {
-                            throw new Error(`Pinterest download failed with status: ${downloadResponse.status}`);
-                        }
-
-                        const fileStream = fs.createWriteStream(tempFilePath);
-                        await new Promise((resolve, reject) => {
-                            downloadResponse.body.pipe(fileStream);
-                            downloadResponse.body.on('error', reject);
-                            fileStream.on('finish', resolve);
-                        });
-
-                        console.log(`Successfully downloaded Pinterest media to ${tempFilePath}`);
-
-                        // Check if the file is valid
-                        const stat = fs.statSync(tempFilePath);
-                        if (stat.size < 100) { // Minimum size for a valid image/video
-                            throw new Error(`Downloaded file is too small (${stat.size} bytes)`);
-                        }
-
-                        // Determine content type based on file extension
-                        let contentType = 'application/octet-stream';
-                        if (fileExt === 'jpg' || fileExt === 'jpeg') contentType = 'image/jpeg';
-                        else if (fileExt === 'png') contentType = 'image/png';
-                        else if (fileExt === 'gif') contentType = 'image/gif';
-                        else if (fileExt === 'webp') contentType = 'image/webp';
-                        else if (fileExt === 'mp4') contentType = 'video/mp4';
-
-                        res.setHeader('Content-Length', stat.size);
-                        res.setHeader('Content-Type', contentType);
-                        res.setHeader('Content-Disposition', `attachment; filename="pinterest-${pinterestData.data.title.replace(/[^a-z0-9]/gi, '_').substring(0, 20)}.${fileExt}"`);
-
-                        const responseStream = fs.createReadStream(tempFilePath);
-                        responseStream.pipe(res);
-
-                        responseStream.on('end', () => {
-                            fs.unlink(tempFilePath, (err) => {
-                                if (err) console.error('Error deleting temp file:', err);
-                            });
-                        });
-
-                        // Return from the function early since we've handled the response
-                        return;
-                    } catch (directDownloadError) {
-                        console.error('Direct Pinterest download failed:', directDownloadError);
-                        // Continue with the regular download process using the direct URL
-                    }
-                } else {
-                    throw new Error('Could not extract direct media URL from Pinterest link');
-                }
-            } catch (pinterestError) {
-                console.error(`Pinterest resolver error: ${pinterestError.message}`);
-                return res.status(400).json({
-                    error: 'Pinterest processing failed',
-                    details: pinterestError.message,
-                    suggestion: 'Try opening the pin in a browser and downloading the image directly'
-                });
-            }
+if (url.includes('pinterest.com') || url.includes('pin.it')) {
+    console.log('Pinterest URL detected, using dedicated endpoint...');
+    try {
+        // Use our dedicated Pinterest endpoint to resolve the media URL
+        const pinterestResponse = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
+        
+        if (!pinterestResponse.ok) {
+            throw new Error(`Pinterest endpoint returned status: ${pinterestResponse.status}`);
         }
-        // Add this special Facebook handling to your main server's /api/download endpoint
-// Add this after the Pinterest handling and before the rest of the download logic
-
-// Add this special handling for Facebook URLs in the /api/direct endpoint
-// Right after the URL trimming section but before any other platform checks
+        
+        const pinterestData = await pinterestResponse.json();
+        
+        // Get the best format (first one in the formats array)
+        if (pinterestData.formats && pinterestData.formats.length > 0) {
+            const directUrl = pinterestData.formats[0].url;
+            console.log(`Resolved Pinterest URL to direct media: ${directUrl}`);
+            
+            // Update the URL to the direct media URL
+            url = directUrl;
+            
+            // Skip youtube-dl for Pinterest and download directly
+            try {
+                console.log('Downloading Pinterest media directly...');
+                const fileExt = pinterestData.formats[0].container || 'jpg';
+                const tempFilePath = path.join(TEMP_DIR, `pinterest-${Date.now()}.${fileExt}`);
+                
+                const downloadResponse = await fetch(directUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Referer': 'https://www.pinterest.com/',
+                        'Accept': 'image/*, video/*, */*',
+                        'Origin': 'https://www.pinterest.com'
+                    },
+                });
+                
+                if (!downloadResponse.ok) {
+                    throw new Error(`Pinterest download failed with status: ${downloadResponse.status}`);
+                }
+                
+                const fileStream = fs.createWriteStream(tempFilePath);
+                await new Promise((resolve, reject) => {
+                    downloadResponse.body.pipe(fileStream);
+                    downloadResponse.body.on('error', reject);
+                    fileStream.on('finish', resolve);
+                });
+                
+                console.log(`Successfully downloaded Pinterest media to ${tempFilePath}`);
+                
+                // Check if the file is valid
+                const stat = fs.statSync(tempFilePath);
+                if (stat.size < 100) { // Minimum size for a valid image/video
+                    throw new Error(`Downloaded file is too small (${stat.size} bytes)`);
+                }
+                
+                // Determine content type based on file extension
+                let contentType = pinterestData.formats[0].mimeType || 'application/octet-stream';
+                
+                res.setHeader('Content-Length', stat.size);
+                res.setHeader('Content-Type', contentType);
+                res.setHeader('Content-Disposition', `attachment; filename="pinterest-${pinterestData.title.replace(/[^a-z0-9]/gi, '_').substring(0, 20)}.${fileExt}"`);
+                
+                const responseStream = fs.createReadStream(tempFilePath);
+                responseStream.pipe(res);
+                
+                responseStream.on('end', () => {
+                    fs.unlink(tempFilePath, (err) => {
+                        if (err) console.error('Error deleting temp file:', err);
+                    });
+                });
+                
+                // Return from the function early since we've handled the response
+                return;
+            } catch (directDownloadError) {
+                console.error('Direct Pinterest download failed:', directDownloadError);
+                // Continue with the regular download process using the direct URL
+            }
+        } else {
+            throw new Error('No formats found in Pinterest data');
+        }
+    } catch (pinterestError) {
+        console.error(`Pinterest endpoint error: ${pinterestError.message}`);
+        return res.status(400).json({
+            error: 'Pinterest processing failed',
+            details: pinterestError.message,
+            suggestion: 'Try opening the pin in a browser and downloading the image directly'
+        });
+    }
+}
 
         if (url.includes('facebook.com') || url.includes('fb.watch') || url.includes('fb.com')) {
             // If it looks like a Facebook page URL and not a direct media URL, resolve it first
