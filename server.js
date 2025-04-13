@@ -2041,7 +2041,90 @@ app.get('/api/direct', async (req, res) => {
     const { url, filename } = req.query;
     // Add this special handling for Facebook Mobile URLs in the /api/direct endpoint
 // Right after the URL trimming section in the existing direct endpoint
+// Add this code to your /api/direct endpoint
+// Right after your Facebook handling section but before the general download logic
 
+// Special handling for Pinterest videos
+if (url.includes('pinterest.com') || url.includes('pinimg.com') || url.includes('v.pinimg.com')) {
+    console.log('Detected Pinterest URL, applying specialized handling');
+    
+    // Set up Pinterest-specific headers
+    const pinterestHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Range': 'bytes=0-',  // This helps with some video streams
+        'Referer': 'https://www.pinterest.com/',
+        'Origin': 'https://www.pinterest.com',
+        'Sec-Fetch-Dest': 'video',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'cross-site',
+        'Connection': 'keep-alive'
+    };
+    
+    try {
+        console.log(`Downloading Pinterest video using specialized approach: ${url}`);
+        
+        // Clean the URL - Pinterest often has escaped characters
+        const cleanUrl = url.replace(/\\u002F/g, '/').replace(/\\\//g, '/').replace(/\\/g, '');
+        console.log(`Cleaned Pinterest URL: ${cleanUrl}`);
+        
+        // For Pinterest, we'll try direct download with proper headers
+        const tempFilePath = path.join(TEMP_DIR, `pinterest-${Date.now()}.mp4`);
+        
+        const downloadResponse = await fetch(cleanUrl, {
+            headers: pinterestHeaders,
+            redirect: 'follow'
+        });
+        
+        if (!downloadResponse.ok) {
+            throw new Error(`Direct download failed with status: ${downloadResponse.status}`);
+        }
+        
+        // Check content type to make sure we're getting a video
+        const contentType = downloadResponse.headers.get('content-type');
+        console.log(`Pinterest content type: ${contentType}`);
+        
+        const fileStream = fs.createWriteStream(tempFilePath);
+        await new Promise((resolve, reject) => {
+            downloadResponse.body.pipe(fileStream);
+            downloadResponse.body.on('error', reject);
+            fileStream.on('finish', resolve);
+        });
+        
+        // Verify we got a valid file (not just a tiny error file)
+        const fileSize = fs.statSync(tempFilePath).size;
+        if (fileSize < 10000) {
+            throw new Error(`Downloaded file is too small (${fileSize} bytes), likely not a valid video`);
+        }
+        
+        console.log(`Successfully downloaded Pinterest video: ${tempFilePath}`);
+        
+        // Set appropriate headers for the response
+        res.setHeader('Content-Length', fileSize);
+        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Disposition', `attachment; filename="pinterest-video.mp4"`);
+        
+        // Stream the file back to the client
+        const responseStream = fs.createReadStream(tempFilePath);
+        responseStream.pipe(res);
+        
+        // Clean up the temporary file once we're done
+        responseStream.on('end', () => {
+            fs.unlink(tempFilePath, (err) => {
+                if (err) console.error('Error deleting temp file:', err);
+            });
+        });
+        
+        // Return early as we've handled the response
+        return;
+        
+    } catch (pinterestDownloadError) {
+        console.error(`Pinterest specialized download failed: ${pinterestDownloadError.message}`);
+        // Continue with normal download logic as fallback
+    }
+}
 // Special handling for Facebook Mobile sharing URLs
     if (url.includes('m.facebook.com/share/v/')) {
         console.log(`Facebook mobile sharing URL detected: ${url}`);
@@ -2279,9 +2362,9 @@ app.get('/api/download', async (req, res) => {
         // Add this special Twitter handling inside your /api/download endpoint
 // Special handling for Pinterest URLs
 if (url.includes('pinterest.com') || url.includes('pin.it')) {
-    console.log('Pinterest URL detected, using dedicated endpoint...');
+    console.log('Pinterest URL detected, using enhanced handler...');
     try {
-        // Use our dedicated Pinterest endpoint to resolve the media URL
+        // First try our dedicated Pinterest endpoint to resolve the media URL
         const pinterestResponse = await fetch(`http://localhost:${PORT}/api/pinterest?url=${encodeURIComponent(url)}`);
         
         if (!pinterestResponse.ok) {
@@ -2292,25 +2375,77 @@ if (url.includes('pinterest.com') || url.includes('pin.it')) {
         
         // Get the best format (first one in the formats array)
         if (pinterestData.formats && pinterestData.formats.length > 0) {
-            const directUrl = pinterestData.formats[0].url;
+            const format = pinterestData.formats[0];
+            let directUrl = format.url;
+            const isVideo = format.mimeType && format.mimeType.includes('video');
+            
             console.log(`Resolved Pinterest URL to direct media: ${directUrl}`);
+            console.log(`Media type: ${isVideo ? 'Video' : 'Image'}`);
+            
+            // Clean up URL - especially important for videos
+            directUrl = directUrl
+                .replace(/\\u002F/g, '/')
+                .replace(/\\\//g, '/')
+                .replace(/\\/g, '')
+                .replace(/&amp;/g, '&');
             
             // Update the URL to the direct media URL
             url = directUrl;
             
-            // Skip youtube-dl for Pinterest and download directly
+            // Set up file info
+            const fileExt = isVideo ? 'mp4' : (format.container || 'jpg');
+            const tempFilePath = path.join(TEMP_DIR, `pinterest-${Date.now()}.${fileExt}`);
+            
+            // Prepare headers based on content type
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.pinterest.com/',
+                'Origin': 'https://www.pinterest.com'
+            };
+            
+            // Add video-specific headers if it's a video
+            if (isVideo) {
+                headers['Accept'] = '*/*';
+                headers['Accept-Language'] = 'en-US,en;q=0.9';
+                headers['Range'] = 'bytes=0-';
+                headers['Sec-Fetch-Dest'] = 'video';
+                headers['Sec-Fetch-Mode'] = 'cors';
+                headers['Sec-Fetch-Site'] = 'cross-site';
+                console.log('Using video-specific headers for Pinterest video');
+            } else {
+                headers['Accept'] = 'image/*, */*';
+            }
+            
             try {
-                console.log('Downloading Pinterest media directly...');
-                const fileExt = pinterestData.formats[0].container || 'jpg';
-                const tempFilePath = path.join(TEMP_DIR, `pinterest-${Date.now()}.${fileExt}`);
+                console.log(`Downloading Pinterest ${isVideo ? 'video' : 'image'} directly...`);
                 
+                // For videos, try to validate the URL first with a HEAD request
+                if (isVideo) {
+                    try {
+                        const headResponse = await fetch(directUrl, {
+                            method: 'HEAD',
+                            headers,
+                            redirect: 'follow'
+                        });
+                        
+                        if (headResponse.ok) {
+                            const contentType = headResponse.headers.get('content-type');
+                            console.log(`Pinterest content type: ${contentType}`);
+                            
+                            // If it's not a video content type, warn but continue
+                            if (contentType && !contentType.includes('video')) {
+                                console.warn(`Warning: URL doesn't appear to be a video (${contentType}), but continuing anyway`);
+                            }
+                        }
+                    } catch (headError) {
+                        console.warn(`HEAD request failed, continuing anyway: ${headError.message}`);
+                    }
+                }
+                
+                // Now download the actual file
                 const downloadResponse = await fetch(directUrl, {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Referer': 'https://www.pinterest.com/',
-                        'Accept': 'image/*, video/*, */*',
-                        'Origin': 'https://www.pinterest.com'
-                    },
+                    headers,
+                    redirect: 'follow'
                 });
                 
                 if (!downloadResponse.ok) {
@@ -2328,20 +2463,43 @@ if (url.includes('pinterest.com') || url.includes('pin.it')) {
                 
                 // Check if the file is valid
                 const stat = fs.statSync(tempFilePath);
-                if (stat.size < 100) { // Minimum size for a valid image/video
-                    throw new Error(`Downloaded file is too small (${stat.size} bytes)`);
+                
+                // Different minimum size checks for videos vs images
+                const minSize = isVideo ? 10000 : 100; // 10KB for videos, 100 bytes for images
+                if (stat.size < minSize) {
+                    throw new Error(`Downloaded file is too small (${stat.size} bytes), likely not valid`);
                 }
                 
-                // Determine content type based on file extension
-                let contentType = pinterestData.formats[0].mimeType || 'application/octet-stream';
+                // Determine content type based on what we know
+                let contentType = 'application/octet-stream';
+                if (isVideo) {
+                    contentType = 'video/mp4';
+                } else if (fileExt === 'jpg' || fileExt === 'jpeg') {
+                    contentType = 'image/jpeg';
+                } else if (fileExt === 'png') {
+                    contentType = 'image/png';
+                } else if (fileExt === 'gif') {
+                    contentType = 'image/gif';
+                } else if (fileExt === 'webp') {
+                    contentType = 'image/webp';
+                }
                 
+                // Set response headers
                 res.setHeader('Content-Length', stat.size);
                 res.setHeader('Content-Type', contentType);
-                res.setHeader('Content-Disposition', `attachment; filename="pinterest-${pinterestData.title.replace(/[^a-z0-9]/gi, '_').substring(0, 20)}.${fileExt}"`);
                 
+                // Format filename
+                const safeTitle = pinterestData.title ? 
+                    pinterestData.title.replace(/[^a-z0-9]/gi, '_').substring(0, 20) : 
+                    'pinterest-media';
+                
+                res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.${fileExt}"`);
+                
+                // Send the file
                 const responseStream = fs.createReadStream(tempFilePath);
                 responseStream.pipe(res);
                 
+                // Clean up the temp file
                 responseStream.on('end', () => {
                     fs.unlink(tempFilePath, (err) => {
                         if (err) console.error('Error deleting temp file:', err);
@@ -2352,18 +2510,73 @@ if (url.includes('pinterest.com') || url.includes('pin.it')) {
                 return;
             } catch (directDownloadError) {
                 console.error('Direct Pinterest download failed:', directDownloadError);
+                console.log('Continuing with the regular download process using the direct URL');
                 // Continue with the regular download process using the direct URL
             }
         } else {
-            throw new Error('No formats found in Pinterest data');
+            console.warn('No formats found in Pinterest data, falling back to normal processing');
         }
-    } catch (pinterestError) {
-        console.error(`Pinterest endpoint error: ${pinterestError.message}`);
-        return res.status(400).json({
-            error: 'Pinterest processing failed',
-            details: pinterestError.message,
-            suggestion: 'Try opening the pin in a browser and downloading the image directly'
-        });
+    } catch (pinterestEndpointError) {
+        console.error(`Pinterest endpoint error: ${pinterestEndpointError.message}`);
+        console.log('Falling back to direct download using ffmpeg...');
+        
+        // If the Pinterest endpoint fails, try a more direct approach
+        try {
+            // This is a last-resort approach for videos using ffmpeg
+            const tempFilePath = path.join(TEMP_DIR, `pinterest-${Date.now()}.mp4`);
+            const ffmpegPath = 'ffmpeg'; // Make sure ffmpeg is installed
+            
+            // More robust headers
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.pinterest.com/',
+            };
+            
+            // Try ffmpeg for more robust video download
+            const ffmpegCmd = `${ffmpegPath} -headers "User-Agent: ${headers['User-Agent']}" -headers "Referer: ${headers.Referer}" -i "${url}" -c copy -y "${tempFilePath}"`;
+            
+            console.log('Executing ffmpeg command for Pinterest video');
+            
+            const { exec } = require('child_process');
+            await new Promise((resolve, reject) => {
+                exec(ffmpegCmd, (error, stdout, stderr) => {
+                    if (error) {
+                        console.error(`ffmpeg error: ${error.message}`);
+                        return reject(error);
+                    }
+                    resolve();
+                });
+            });
+            
+            // Check if ffmpeg created a valid file
+            if (fs.existsSync(tempFilePath) && fs.statSync(tempFilePath).size > 10000) {
+                console.log(`Successfully downloaded Pinterest video with ffmpeg: ${tempFilePath}`);
+                
+                const stat = fs.statSync(tempFilePath);
+                
+                res.setHeader('Content-Length', stat.size);
+                res.setHeader('Content-Type', 'video/mp4');
+                res.setHeader('Content-Disposition', `attachment; filename="pinterest-video.mp4"`);
+                
+                const fileStream = fs.createReadStream(tempFilePath);
+                fileStream.pipe(res);
+                
+                fileStream.on('end', () => {
+                    fs.unlink(tempFilePath, (err) => {
+                        if (err) console.error('Error deleting temp file:', err);
+                    });
+                });
+                
+                return; // Exit early as we're handling the response
+            }
+            
+            // If ffmpeg failed, continue with normal processing
+            console.warn('ffmpeg approach failed or produced invalid file, continuing with normal processing');
+            
+        } catch (ffmpegError) {
+            console.error(`ffmpeg approach failed: ${ffmpegError.message}`);
+            // Continue to standard processing
+        }
     }
 }
 
