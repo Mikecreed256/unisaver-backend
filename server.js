@@ -327,6 +327,634 @@ const downloadLargeFile = async (fileUrl, filename) => {
         throw new Error(`Failed to download the file: ${error.message}`);
     }
 };
+// Enhanced generic handler with youtube-dl - ENHANCED for additional platforms
+// Replace your existing processGenericUrlWithYtdl function with this improved version
+async function processGenericUrlWithYtdl(url, platform) {
+    console.log(`Processing ${platform} URL with youtube-dl: ${url}`);
+
+    // Verify we're not trying to process just a homepage URL
+    try {
+        const uri = new URL(url);
+        if (uri.pathname === '/' || uri.pathname === '') {
+            throw new Error(`URL appears to be just the ${platform} homepage, not a specific content URL`);
+        }
+    } catch (urlError) {
+        console.warn(`URL parsing error: ${urlError.message}`);
+        // Continue anyway, as the error might be unrelated to the path
+    }
+
+    try {
+        // Use much simpler, universally compatible options for youtube-dl
+        const ytdlOptions = {
+            dumpSingleJson: true,
+            noCheckCertificates: true,
+            noWarnings: true,
+            addHeader: [
+                'referer:' + new URL(url).origin,
+                'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            ],
+        };
+
+        // Use simpler format string that works on all versions
+        if (['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
+             'amazon_music', 'mixcloud', 'audiomack'].includes(platform)) {
+            // For audio platforms
+            ytdlOptions.extractAudio = true;
+            ytdlOptions.audioFormat = 'mp3';
+            ytdlOptions.format = 'bestaudio';  // Simple format string
+        } else {
+            // For video platforms
+            ytdlOptions.format = 'best';  // Simple format string
+        }
+
+        console.log(`Executing youtube-dl for ${platform} with format: ${ytdlOptions.format}`);
+        const info = await youtubeDl(url, ytdlOptions);
+
+        // Now process the results based on platform type
+        const isAudioPlatform = ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
+            'amazon_music', 'mixcloud', 'audiomack'].includes(platform);
+
+        // Extract the URL based on the platform type
+        let mediaUrl = '';
+        let quality = 'Standard Quality';
+
+        if (isAudioPlatform) {
+            // For audio platforms, get the best audio URL
+            if (info.url) {
+                mediaUrl = info.url;
+            } else if (info.formats && info.formats.length > 0) {
+                // Try to find audio-focused format
+                const audioFormats = info.formats
+                    .filter(f => f.acodec !== 'none')
+                    .sort((a, b) => {
+                        const bitrateA = a.abr || 0;
+                        const bitrateB = b.abr || 0;
+                        return bitrateB - bitrateA;  // Sort by bitrate, highest first
+                    });
+
+                if (audioFormats.length > 0) {
+                    const bestFormat = audioFormats[0];
+                    mediaUrl = bestFormat.url;
+                    if (bestFormat.abr) {
+                        quality = `${bestFormat.abr}kbps`;
+                    }
+                } else if (info.formats.length > 0) {
+                    // If no audio-only formats, use the first available
+                    mediaUrl = info.formats[0].url;
+                }
+            }
+        } else {
+            // For video platforms, get the best video URL
+            if (info.url) {
+                mediaUrl = info.url;
+            } else if (info.formats && info.formats.length > 0) {
+                // Try to find a good quality video+audio format
+                const videoFormats = info.formats
+                    .filter(f => f.vcodec !== 'none' && f.acodec !== 'none')
+                    .sort((a, b) => {
+                        const heightA = a.height || 0;
+                        const heightB = b.height || 0;
+                        return heightB - heightA;  // Sort by height/resolution, highest first
+                    });
+
+                if (videoFormats.length > 0) {
+                    const bestFormat = videoFormats[0];
+                    mediaUrl = bestFormat.url;
+                    if (bestFormat.height) {
+                        quality = `${bestFormat.height}p`;
+                    } else if (bestFormat.format_note) {
+                        quality = bestFormat.format_note;
+                    }
+                } else if (info.formats.length > 0) {
+                    // If no video formats with audio, use the first available
+                    mediaUrl = info.formats[0].url;
+                }
+            }
+        }
+
+        if (!mediaUrl) {
+            throw new Error(`No ${isAudioPlatform ? 'audio' : 'video'} URL found for ${platform}`);
+        }
+
+        console.log(`Successfully extracted ${platform} ${isAudioPlatform ? 'audio' : 'video'} URL: ${mediaUrl.substring(0, 100)}...`);
+
+        return {
+            success: true,
+            data: {
+                title: info.title || `${platform.charAt(0).toUpperCase() + platform.slice(1)} ${isAudioPlatform ? 'Audio' : 'Video'}`,
+                url: mediaUrl,
+                thumbnail: info.thumbnail || 'https://via.placeholder.com/300x150',
+                sizes: [quality],
+                source: platform,
+                mediaType: isAudioPlatform ? 'audio' : 'video',
+            }
+        };
+    } catch (ytdlError) {
+        console.error(`youtube-dl error for ${platform}: ${ytdlError.message}`);
+
+        // Try a different approach for different platforms
+        try {
+            console.log(`Attempting alternative approach for ${platform}...`);
+
+            // Platform-specific fallbacks
+            if (platform === 'soundcloud') {
+                return await handleSoundCloudFallback(url);
+            } else if (platform === 'vimeo') {
+                return await handleVimeoFallback(url);
+            } else if (platform === 'spotify') {
+                return await handleSpotifyFallback(url);
+            } else if (platform === 'bandcamp') {
+                return await handleBandcampFallback(url);
+            } else {
+                // Generic fallback for other platforms - try with modified options
+                const fallbackOptions = {
+                    dumpSingleJson: true,
+                    noCheckCertificates: true,
+                    noWarnings: true,
+                    format: ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
+                        'amazon_music', 'mixcloud', 'audiomack'].includes(platform) ? 'bestaudio' : 'best',
+                    addHeader: [
+                        'user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+                    ],
+                };
+
+                const info = await youtubeDl(url, fallbackOptions);
+                const isAudioPlatform = ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
+                    'amazon_music', 'mixcloud', 'audiomack'].includes(platform);
+                
+                let bestUrl = info.url || '';
+                if (!bestUrl && info.formats && info.formats.length > 0) {
+                    bestUrl = info.formats[0].url;
+                }
+
+                if (!bestUrl) {
+                    throw new Error('No media URL found in fallback attempt');
+                }
+
+                return {
+                    success: true,
+                    data: {
+                        title: info.title || `${platform.charAt(0).toUpperCase() + platform.slice(1)} ${isAudioPlatform ? 'Audio' : 'Video'}`,
+                        url: bestUrl,
+                        thumbnail: info.thumbnail || 'https://via.placeholder.com/300x150',
+                        sizes: ['Standard Quality'],
+                        source: platform,
+                        mediaType: isAudioPlatform ? 'audio' : 'video',
+                    }
+                };
+            }
+        } catch (fallbackError) {
+            console.error(`Fallback method for ${platform} also failed: ${fallbackError.message}`);
+
+            // Last resort: try to at least get metadata
+            try {
+                console.log(`Attempting to extract basic metadata for ${platform}...`);
+                const response = await fetch(url, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch page: ${response.status}`);
+                }
+
+                const html = await response.text();
+                
+                // Extract basic metadata
+                let title = `${platform.charAt(0).toUpperCase() + platform.slice(1)} Media`;
+                let thumbnail = 'https://via.placeholder.com/300x150';
+                
+                // Try to extract title
+                const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i) || 
+                                  html.match(/<title>([^<]+)<\/title>/i);
+                if (titleMatch && titleMatch[1]) {
+                    title = titleMatch[1].trim();
+                }
+                
+                // Try to extract thumbnail
+                const thumbnailMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+                if (thumbnailMatch && thumbnailMatch[1]) {
+                    thumbnail = thumbnailMatch[1];
+                }
+
+                // For the last resort, use our download endpoint
+                const downloadUrl = `/api/download?url=${encodeURIComponent(url)}`;
+                
+                return {
+                    success: true,
+                    data: {
+                        title: title,
+                        url: downloadUrl,
+                        thumbnail: thumbnail,
+                        sizes: ['Original Quality'],
+                        source: platform,
+                        mediaType: ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
+                            'amazon_music', 'mixcloud', 'audiomack'].includes(platform) ? 'audio' : 'video',
+                        useDownloadEndpoint: true
+                    }
+                };
+            } catch (metadataError) {
+                console.error(`All methods failed for ${platform}: ${metadataError.message}`);
+                throw new Error(`Could not process ${platform} content: ${ytdlError.message}`);
+            }
+        }
+    }
+}
+
+// Platform-specific fallback handlers
+async function handleSoundCloudFallback(url) {
+    console.log('Using SoundCloud-specific fallback method');
+
+    try {
+        // Try to fetch the SoundCloud page to extract metadata and stream URL
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch SoundCloud page: ${response.status}`);
+        }
+
+        const html = await response.text();
+
+        // Extract basic metadata
+        let title = 'SoundCloud Track';
+        let thumbnail = 'https://via.placeholder.com/300x150';
+        let streamUrl = '';
+
+        // Extract title
+        const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i);
+        if (titleMatch && titleMatch[1]) {
+            title = titleMatch[1];
+        }
+
+        // Extract thumbnail
+        const thumbnailMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+        if (thumbnailMatch && thumbnailMatch[1]) {
+            thumbnail = thumbnailMatch[1];
+        }
+
+        // Look for SoundCloud API data
+        const apiDataMatch = html.match(/window\.__sc_hydration\s*=\s*(\[.*?\]);/s);
+        if (apiDataMatch && apiDataMatch[1]) {
+            try {
+                const hydrationData = JSON.parse(apiDataMatch[1]);
+                
+                // Find the stream info in the hydration data
+                const streamInfo = hydrationData.find(item => 
+                    item.hydratable === 'sound' || 
+                    (item.data && (item.data.streamUrl || item.data.stream_url || 
+                                  (item.data.media && item.data.media.transcodings)))
+                );
+                
+                if (streamInfo && streamInfo.data) {
+                    // Try to find the stream URL
+                    if (streamInfo.data.streamUrl) {
+                        streamUrl = streamInfo.data.streamUrl;
+                    } else if (streamInfo.data.stream_url) {
+                        streamUrl = streamInfo.data.stream_url;
+                    } else if (streamInfo.data.media && streamInfo.data.media.transcodings) {
+                        // Find progressive stream if available
+                        const progressiveStream = streamInfo.data.media.transcodings.find(
+                            t => t.format.protocol === 'progressive'
+                        );
+                        
+                        if (progressiveStream && progressiveStream.url) {
+                            streamUrl = progressiveStream.url;
+                            
+                            // Need to add client_id to the URL
+                            const clientIdMatch = html.match(/client_id=([^&"]+)/);
+                            if (clientIdMatch && clientIdMatch[1]) {
+                                const clientId = clientIdMatch[1];
+                                streamUrl = `${streamUrl}?client_id=${clientId}`;
+                            }
+                        }
+                    }
+                }
+            } catch (jsonError) {
+                console.error('Error parsing SoundCloud hydration data:', jsonError);
+            }
+        }
+
+        // If we found a stream URL, use it
+        if (streamUrl) {
+            console.log(`Found SoundCloud stream URL: ${streamUrl}`);
+            return {
+                success: true,
+                data: {
+                    title: title,
+                    url: streamUrl,
+                    thumbnail: thumbnail,
+                    sizes: ['High Quality'],
+                    source: 'soundcloud',
+                    mediaType: 'audio',
+                }
+            };
+        }
+
+        // No stream URL found, use our download endpoint
+        console.log('No direct stream URL found, using download endpoint');
+        const downloadUrl = `/api/download?url=${encodeURIComponent(url)}`;
+        
+        return {
+            success: true,
+            data: {
+                title: title,
+                url: downloadUrl,
+                thumbnail: thumbnail,
+                sizes: ['Original Quality'],
+                source: 'soundcloud',
+                mediaType: 'audio',
+                useDownloadEndpoint: true
+            }
+        };
+    } catch (error) {
+        console.error(`SoundCloud fallback error: ${error.message}`);
+        throw error;
+    }
+}
+
+async function handleVimeoFallback(url) {
+    console.log('Using Vimeo-specific fallback method');
+
+    try {
+        // Fetch the Vimeo page
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch Vimeo page: ${response.status}`);
+        }
+
+        const html = await response.text();
+
+        // Extract basic metadata
+        let title = 'Vimeo Video';
+        let thumbnail = 'https://via.placeholder.com/300x150';
+        let videoUrl = '';
+
+        // Extract title
+        const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i);
+        if (titleMatch && titleMatch[1]) {
+            title = titleMatch[1];
+        }
+
+        // Extract thumbnail
+        const thumbnailMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+        if (thumbnailMatch && thumbnailMatch[1]) {
+            thumbnail = thumbnailMatch[1];
+        }
+
+        // Look for Vimeo config data
+        const configMatch = html.match(/var config = ({.*?});/s);
+        if (configMatch && configMatch[1]) {
+            try {
+                // Replace single quotes with double quotes for JSON parsing
+                let configStr = configMatch[1].replace(/'/g, '"');
+                const config = JSON.parse(configStr);
+                
+                // Extract video URL from config
+                if (config.video && config.video.play && config.video.play.progressive) {
+                    const progressiveUrls = config.video.play.progressive;
+                    if (Array.isArray(progressiveUrls) && progressiveUrls.length > 0) {
+                        // Sort by quality (highest first)
+                        progressiveUrls.sort((a, b) => 
+                            parseInt(b.height || 0) - parseInt(a.height || 0)
+                        );
+                        
+                        const bestQuality = progressiveUrls[0];
+                        videoUrl = bestQuality.url;
+                        
+                        console.log(`Found Vimeo video URL (${bestQuality.height}p): ${videoUrl}`);
+                    }
+                }
+            } catch (jsonError) {
+                console.error('Error parsing Vimeo config:', jsonError);
+            }
+        }
+
+        // If we couldn't find config, try a different approach
+        if (!videoUrl) {
+            // Look for player_url in metadata
+            const playerUrlMatch = html.match(/<meta property="twitter:player" content="([^"]+)"/i);
+            if (playerUrlMatch && playerUrlMatch[1]) {
+                console.log('Found Vimeo player URL, using download endpoint');
+            }
+            
+            // Use our download endpoint as fallback
+            const downloadUrl = `/api/download?url=${encodeURIComponent(url)}`;
+            
+            return {
+                success: true,
+                data: {
+                    title: title,
+                    url: downloadUrl,
+                    thumbnail: thumbnail,
+                    sizes: ['Original Quality'],
+                    source: 'vimeo',
+                    mediaType: 'video',
+                    useDownloadEndpoint: true
+                }
+            };
+        }
+
+        return {
+            success: true,
+            data: {
+                title: title,
+                url: videoUrl,
+                thumbnail: thumbnail,
+                sizes: ['High Quality'],
+                source: 'vimeo',
+                mediaType: 'video',
+            }
+        };
+    } catch (error) {
+        console.error(`Vimeo fallback error: ${error.message}`);
+        throw error;
+    }
+}
+
+async function handleSpotifyFallback(url) {
+    console.log('Using Spotify-specific fallback method');
+    
+    try {
+        // Get metadata from Spotify page
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch Spotify page: ${response.status}`);
+        }
+
+        const html = await response.text();
+
+        // Extract basic metadata
+        let title = 'Spotify Track';
+        let artist = '';
+        let thumbnail = 'https://via.placeholder.com/300x150';
+
+        // Extract title
+        const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i);
+        if (titleMatch && titleMatch[1]) {
+            title = titleMatch[1];
+        }
+
+        // Extract artist from description
+        const descMatch = html.match(/<meta property="og:description" content="([^"]+)"/i);
+        if (descMatch && descMatch[1]) {
+            const descParts = descMatch[1].split('·');
+            if (descParts.length > 0) {
+                artist = descParts[0].trim();
+            }
+        }
+
+        // Extract thumbnail
+        const thumbnailMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+        if (thumbnailMatch && thumbnailMatch[1]) {
+            thumbnail = thumbnailMatch[1];
+        }
+
+        // For Spotify, we'll use our download endpoint
+        const downloadUrl = `/api/download?url=${encodeURIComponent(url)}`;
+        
+        return {
+            success: true,
+            data: {
+                title: artist ? `${artist} - ${title}` : title,
+                url: downloadUrl,
+                thumbnail: thumbnail,
+                sizes: ['High Quality'],
+                source: 'spotify',
+                mediaType: 'audio',
+                useDownloadEndpoint: true
+            }
+        };
+    } catch (error) {
+        console.error(`Spotify fallback error: ${error.message}`);
+        throw error;
+    }
+}
+
+async function handleBandcampFallback(url) {
+    console.log('Using Bandcamp-specific fallback method');
+    
+    try {
+        // Get metadata from Bandcamp page
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch Bandcamp page: ${response.status}`);
+        }
+
+        const html = await response.text();
+
+        // Extract basic metadata
+        let title = 'Bandcamp Track';
+        let artist = '';
+        let thumbnail = 'https://via.placeholder.com/300x150';
+        let trackUrl = '';
+
+        // Extract title
+        const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i);
+        if (titleMatch && titleMatch[1]) {
+            title = titleMatch[1];
+        }
+
+        // Extract thumbnail
+        const thumbnailMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+        if (thumbnailMatch && thumbnailMatch[1]) {
+            thumbnail = thumbnailMatch[1];
+        }
+
+        // Look for the track data in the page
+        const trackDataMatch = html.match(/data-tralbum="([^"]+)"/);
+        if (trackDataMatch && trackDataMatch[1]) {
+            try {
+                // Decode HTML entities and parse as JSON
+                const decodedData = trackDataMatch[1]
+                    .replace(/&quot;/g, '"')
+                    .replace(/&amp;/g, '&')
+                    .replace(/\\u002f/g, '/');
+                    
+                const trackData = JSON.parse(decodedData);
+                
+                // Extract track info
+                if (trackData.trackinfo && trackData.trackinfo.length > 0) {
+                    const track = trackData.trackinfo[0];
+                    if (track.file && track.file.mp3-128) {
+                        trackUrl = track.file['mp3-128'];
+                        console.log(`Found Bandcamp track URL: ${trackUrl}`);
+                    }
+                }
+                
+                // Extract artist if available
+                if (trackData.artist) {
+                    artist = trackData.artist;
+                }
+            } catch (jsonError) {
+                console.error('Error parsing Bandcamp track data:', jsonError);
+            }
+        }
+
+        // Alternative method to find track URL
+        if (!trackUrl) {
+            const fileMatch = html.match(/{"mp3-128":"([^"]+)"/);
+            if (fileMatch && fileMatch[1]) {
+                trackUrl = fileMatch[1].replace(/\\u0026/g, '&');
+                console.log(`Found alternative Bandcamp track URL: ${trackUrl}`);
+            }
+        }
+
+        // If we found a track URL, use it
+        if (trackUrl) {
+            return {
+                success: true,
+                data: {
+                    title: artist ? `${artist} - ${title}` : title,
+                    url: trackUrl,
+                    thumbnail: thumbnail,
+                    sizes: ['128kbps'],
+                    source: 'bandcamp',
+                    mediaType: 'audio',
+                }
+            };
+        }
+
+        // No track URL found, use our download endpoint
+        console.log('No direct track URL found, using download endpoint');
+        const downloadUrl = `/api/download?url=${encodeURIComponent(url)}`;
+        
+        return {
+            success: true,
+            data: {
+                title: artist ? `${artist} - ${title}` : title,
+                url: downloadUrl,
+                thumbnail: thumbnail,
+                sizes: ['Original Quality'],
+                source: 'bandcamp',
+                mediaType: 'audio',
+                useDownloadEndpoint: true
+            }
+        };
+    } catch (error) {
+        console.error(`Bandcamp fallback error: ${error.message}`);
+        throw error;
+    }
+}
 // Add this specialized function for handling Facebook mobile URLs
 // Enhanced Facebook mobile video downloader to fix black screen issues
 async function processFacebookMobileUrl(url) {
@@ -927,168 +1555,6 @@ async function processTwitterWithYtdl(url) {
         }
     }
 }
-// Add this endpoint to your server.js file
-// This handles only music and video platforms without affecting your working social media endpoints
-
-app.get('/api/special-media', async (req, res) => {
-    const { url } = req.query;
-    
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
-  
-    try {
-      const platform = identifyPlatform(url);
-      console.log(`Processing special media platform ${platform}: ${url}`);
-      
-      // List of platforms this endpoint handles
-      const musicPlatforms = ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music', 
-                           'amazon_music', 'mixcloud', 'audiomack'];
-                           
-      const videoPlatforms = ['vimeo', 'dailymotion', 'twitch', 'reddit', 'linkedin', 
-                           'tumblr', 'vk', 'bilibili', 'snapchat'];
-      
-      // Only process if it's one of our special platforms
-      const isAudioPlatform = musicPlatforms.includes(platform);
-      const isVideoPlatform = videoPlatforms.includes(platform);
-      
-      if (!isAudioPlatform && !isVideoPlatform) {
-        return res.status(400).json({ 
-          error: 'Unsupported platform', 
-          message: 'This endpoint only supports specific music and video platforms'
-        });
-      }
-  
-      // Configure youtube-dl options based on media type
-      const ytdlOptions = {
-        dumpSingleJson: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        addHeader: [
-          'referer:' + new URL(url).origin,
-          'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        ],
-      };
-      
-      if (isAudioPlatform) {
-        ytdlOptions.extractAudio = true;
-        ytdlOptions.audioFormat = 'mp3';
-        ytdlOptions.formatSort = 'bestaudio';
-      } else {
-        ytdlOptions.formatSort = 'bestvideo+bestaudio/best';
-      }
-      
-      // Try youtube-dl first
-      try {
-        console.log(`Using youtube-dl for ${platform}`);
-        const info = await youtubeDl(url, ytdlOptions);
-        
-        if (isAudioPlatform) {
-          // Process audio platform
-          const audioFormats = (info.formats || [])
-            .filter(f => f.acodec !== 'none')
-            .sort((a, b) => {
-              const bitrateA = a.abr || 0;
-              const bitrateB = b.abr || 0;
-              return bitrateB - bitrateA;
-            });
-            
-          const bestFormat = audioFormats[0] || info.formats[0];
-          
-          if (!bestFormat) {
-            throw new Error('No audio formats found');
-          }
-          
-          console.log(`Found best audio format: ${bestFormat.format || 'unknown format'}`);
-          
-          return res.json({
-            title: info.title || `${platform} Audio`,
-            formats: [{
-              itag: 'audio_best',
-              quality: bestFormat.abr ? `${bestFormat.abr}kbps` : 'Best Quality',
-              mimeType: 'audio/mp3',
-              url: bestFormat.url,
-              hasAudio: true,
-              hasVideo: false
-            }],
-            thumbnails: [{ url: info.thumbnail || 'https://via.placeholder.com/300x150' }],
-            platform,
-            mediaType: 'audio',
-            directUrl: `/api/direct?url=${encodeURIComponent(bestFormat.url)}&referer=${platform}.com`
-          });
-        } 
-        else {
-          // Process video platform
-          const videoFormats = (info.formats || [])
-            .filter(f => f.vcodec !== 'none')
-            .sort((a, b) => {
-              const heightA = a.height || 0;
-              const heightB = b.height || 0;
-              return heightB - heightA;
-            });
-            
-          const bestFormat = videoFormats[0] || info.formats[0];
-          
-          if (!bestFormat) {
-            throw new Error('No video formats found');
-          }
-          
-          console.log(`Found best video format: ${bestFormat.format || 'unknown format'}`);
-          
-          let quality = 'Standard Quality';
-          if (bestFormat.height) {
-            quality = `${bestFormat.height}p`;
-          } else if (bestFormat.format_note) {
-            quality = bestFormat.format_note;
-          }
-          
-          return res.json({
-            title: info.title || `${platform} Video`,
-            formats: [{
-              itag: 'video_best',
-              quality: quality,
-              mimeType: `video/${bestFormat.ext || 'mp4'}`,
-              url: bestFormat.url,
-              hasAudio: bestFormat.acodec !== 'none',
-              hasVideo: true
-            }],
-            thumbnails: [{ url: info.thumbnail || 'https://via.placeholder.com/300x150' }],
-            platform,
-            mediaType: 'video',
-            directUrl: `/api/direct?url=${encodeURIComponent(bestFormat.url)}&referer=${platform}.com`
-          });
-        }
-      } catch (ytdlError) {
-        console.error(`youtube-dl error for ${platform}: ${ytdlError.message}`);
-        
-        // Fallback to a more direct approach
-        // For brevity, this returns a standardized response structure that matches
-        // what your app expects, but with direct URLs
-        return res.json({
-          title: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Media`,
-          formats: [{
-            itag: isAudioPlatform ? 'audio_fallback' : 'video_fallback',
-            quality: 'Original Quality',
-            mimeType: isAudioPlatform ? 'audio/mp3' : 'video/mp4',
-            url: url,
-            hasAudio: true,
-            hasVideo: !isAudioPlatform
-          }],
-          thumbnails: [{ url: 'https://via.placeholder.com/300x150' }],
-          platform,
-          mediaType: isAudioPlatform ? 'audio' : 'video',
-          directUrl: `/api/direct?url=${encodeURIComponent(url)}&referer=${platform}.com`
-        });
-      }
-    } catch (error) {
-      console.error(`Special media processing error: ${error.message}`);
-      res.status(500).json({ 
-        error: 'Media processing failed', 
-        details: error.message,
-        platform: identifyPlatform(url) || 'unknown'
-      });
-    }
-  });
 // Add this to your server.js file to handle streaming of local files
 
 // File streaming endpoint for downloaded Twitter videos
@@ -1184,9 +1650,9 @@ app.post('/api/download-media', async (req, res) => {
                 break;
             default:
                 // For all other platforms, use youtube-dl
-                console.info(`Using youtube-dl for platform: ${platform}`);
-                data = await processGenericUrlWithYtdl(url, platform);
-                return res.status(200).json(data);
+                console.info(`Using enhanced generic handler for platform: ${platform}`);
+                const result = await processGenericUrlWithYtdl(url, platform);
+                return res.status(200).json(result);
         }
 
         if (!data) {
@@ -1522,7 +1988,27 @@ app.get('/api/info', async (req, res) => {
             return res.status(400).json({ error: 'Unsupported platform' });
         }
 
-        // ADD THIS SECTION: Special handling for Pinterest
+        // Carefully check if URL is just a homepage without causing errors
+        try {
+            const uri = new URL(url);
+            if ((uri.pathname === '/' || uri.pathname === '') && 
+                ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
+                'amazon_music', 'mixcloud', 'audiomack', 'vimeo',
+                'dailymotion', 'twitch', 'reddit', 'linkedin', 
+                'tumblr', 'vk', 'bilibili', 'snapchat'].includes(platform)) {
+                
+                console.warn(`URL appears to be just the ${platform} homepage, not specific content`);
+                return res.status(400).json({ 
+                    error: 'Invalid URL',
+                    message: `Please provide a URL to a specific ${platform} content, not just the homepage`
+                });
+            }
+        } catch (urlError) {
+            // Continue anyway as this error might be unrelated to the path
+            console.warn(`URL parsing error: ${urlError.message}`);
+        }
+
+        // Special handling for Pinterest
         if (platform === 'pinterest') {
             console.log('Using dedicated Pinterest endpoint');
             try {
@@ -1577,6 +2063,8 @@ app.get('/api/info', async (req, res) => {
                 platform,
                 mediaType: isImage ? 'image' :
                     isAudioPlatform ? 'audio' : 'video',
+                // Add directUrl to help mobile app with direct downloading
+                directUrl: `/api/direct?url=${encodeURIComponent(data.data.url)}&referer=${platform}.com`
             };
 
             return res.json(formattedResponse);
@@ -1607,12 +2095,59 @@ app.get('/api/info', async (req, res) => {
             const isAudioPlatform = ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
                 'amazon_music', 'mixcloud', 'audiomack'].includes(platform);
 
-            // Generic youtube-dl fallback for all platforms
-            const info = await youtubeDl(url, {
+            try {
+                console.log(`Trying improved generic handler for ${platform}`);
+                const result = await processGenericUrlWithYtdl(url, platform);
+                
+                if (result && result.success && result.data) {
+                    // Format to match expected response format
+                    const isImage = result.data.url && (
+                        result.data.url.includes('.jpg') ||
+                        result.data.url.includes('.jpeg') ||
+                        result.data.url.includes('.png')
+                    );
+                    
+                    // Check if this is a download endpoint URL
+                    let directUrl = null;
+                    if (result.data.useDownloadEndpoint) {
+                        directUrl = result.data.url;
+                    } else {
+                        directUrl = `/api/direct?url=${encodeURIComponent(result.data.url)}&referer=${platform}.com`;
+                    }
+                    
+                    return res.json({
+                        title: result.data.title,
+                        formats: [{
+                            itag: 'best',
+                            quality: result.data.sizes?.[0] || 'Best Quality',
+                            mimeType: isImage ? 'image/jpeg' :
+                                isAudioPlatform ? 'audio/mp3' : 'video/mp4',
+                            url: result.data.url,
+                            hasAudio: !isImage,
+                            hasVideo: !isImage && !isAudioPlatform,
+                        }],
+                        thumbnails: [{ url: result.data.thumbnail }],
+                        platform,
+                        mediaType: isImage ? 'image' :
+                            isAudioPlatform ? 'audio' : 'video',
+                        directUrl: directUrl
+                    });
+                }
+            } catch (handlerError) {
+                console.error(`Improved handler failed for ${platform}: ${handlerError.message}`);
+                // Continue to more generic fallback
+            }
+
+            // Generic youtube-dl fallback with simplified options
+            const ytdlOptions = {
                 dumpSingleJson: true,
                 noCheckCertificates: true,
                 noWarnings: true,
-            });
+                format: isAudioPlatform ? 'bestaudio' : 'best'  // Simplified format string
+            };
+            
+            console.log(`Trying simple youtube-dl for ${platform} with format: ${ytdlOptions.format}`);
+            const info = await youtubeDl(url, ytdlOptions);
 
             // Different format handling based on platform type
             let formats = [];
@@ -1679,6 +2214,7 @@ app.get('/api/info', async (req, res) => {
                 formats,
                 platform,
                 mediaType: isAudioPlatform ? 'audio' : 'video',
+                directUrl: `/api/direct?url=${encodeURIComponent(formats[0].url)}&referer=${platform}.com`
             });
         } catch (fallbackError) {
             console.error('Fallback processing error:', fallbackError);
@@ -1701,11 +2237,11 @@ app.get('/api/info', async (req, res) => {
                 }],
                 platform,
                 mediaType: isAudioPlatform ? 'audio' : 'video',
+                directUrl: `/api/direct?url=${encodeURIComponent(url)}&referer=${platform}.com`
             });
         }
     }
 });
-
 // Implement platform-specific endpoints to match your Flutter app
 
 // Twitter endpoint
@@ -2896,6 +3432,149 @@ if (url.includes('pinterest.com') || url.includes('pin.it')) {
         }
     }
 }
+// Special handling for music and video platforms
+const platform = identifyPlatform(url);
+const isAudioPlatform = ['spotify', 'soundcloud', 'bandcamp', 'deezer', 'apple_music',
+    'amazon_music', 'mixcloud', 'audiomack'].includes(platform);
+const isVideoPlatform = ['vimeo', 'dailymotion', 'twitch', 'reddit', 'linkedin', 
+    'tumblr', 'vk', 'bilibili', 'snapchat'].includes(platform);
+
+if (isAudioPlatform || isVideoPlatform) {
+    console.log(`Special handling for ${platform} (${isAudioPlatform ? 'audio' : 'video'} platform)`);
+    
+    // Verify not just a homepage URL
+    try {
+        const uri = new URL(url);
+        if (uri.pathname === '/' || uri.pathname === '') {
+            return res.status(400).json({ 
+                error: 'Invalid URL',
+                message: `Please provide a URL to a specific ${platform} content, not just the homepage`
+            });
+        }
+    } catch (urlError) {
+        console.warn(`URL parsing error: ${urlError.message}`);
+        // Continue anyway as this error might be unrelated to the path
+    }
+
+    // Create unique file name
+    const uniqueId = Date.now();
+    const fileExt = isAudioPlatform ? 'mp3' : 'mp4';
+    const tempFilePath = path.join(TEMP_DIR, `${platform}-${uniqueId}.${fileExt}`);
+    
+    // Configure youtube-dl options based on platform
+    const options = {
+        output: tempFilePath,
+        noCheckCertificates: true,
+        noWarnings: true,
+        preferFreeFormats: true,
+        addHeader: [
+            'referer:' + new URL(url).origin,
+            'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ],
+    };
+
+    // Set format based on platform type
+    if (isAudioPlatform) {
+        options.extractAudio = true;
+        options.audioFormat = 'mp3';
+        options.audioQuality = 0;
+        options.format = itag && itag !== 'best' ? itag : 'bestaudio';
+    } else {
+        options.format = itag && itag !== 'best' ? itag : 'best';
+    }
+
+    try {
+        console.log(`Downloading ${platform} content with youtube-dl using format: ${options.format}`);
+        await youtubeDl(url, options);
+        console.log(`youtube-dl completed for ${platform}`);
+        
+        // Check if the file was created successfully
+        if (!fs.existsSync(tempFilePath)) {
+            throw new Error(`Download failed - file not created for ${platform}`);
+        }
+        
+        const stat = fs.statSync(tempFilePath);
+        
+        // Make sure the file has actual content
+        if (stat.size === 0) {
+            fs.unlinkSync(tempFilePath);
+            throw new Error(`Downloaded file for ${platform} is empty`);
+        }
+        
+        console.log(`Successfully downloaded ${platform} file (${stat.size} bytes)`);
+        
+        // Determine content type for response
+        let contentType = 'application/octet-stream';
+        if (fileExt === 'mp4') contentType = 'video/mp4';
+        else if (fileExt === 'mp3') contentType = 'audio/mpeg';
+        
+        // Determine a friendly filename
+        const filename = `${platform}-download.${fileExt}`;
+        
+        // Stream the file to the client
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        
+        const fileStream = fs.createReadStream(tempFilePath);
+        fileStream.pipe(res);
+        
+        fileStream.on('end', () => {
+            fs.unlink(tempFilePath, (err) => {
+                if (err) console.error('Error deleting temp file:', err);
+            });
+        });
+        
+        return; // Exit early as we're handling the response
+    } catch (ytdlError) {
+        console.error(`youtube-dl error for ${platform}: ${ytdlError.message}`);
+        
+        // Platform-specific fallbacks
+        try {
+            console.log(`Attempting specialized fallback for ${platform}`);
+            
+            // Choose fallback based on platform
+            if (platform === 'soundcloud') {
+                await handleSoundCloudDownload(url, tempFilePath);
+            } else if (platform === 'vimeo') {
+                await handleVimeoDownload(url, tempFilePath);
+            } else if (platform === 'spotify') {
+                await handleSpotifyDownload(url, tempFilePath);
+            } else {
+                // Generic direct download attempt
+                await handleDirectDownload(url, tempFilePath, platform);
+            }
+            
+            // If we reach here, the fallback was successful
+            const stat = fs.statSync(tempFilePath);
+            
+            // Determine content type
+            let contentType = isAudioPlatform ? 'audio/mpeg' : 'video/mp4';
+            
+            // Determine a friendly filename
+            const filename = `${platform}-download.${fileExt}`;
+            
+            // Stream the file to the client
+            res.setHeader('Content-Length', stat.size);
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+            
+            const fileStream = fs.createReadStream(tempFilePath);
+            fileStream.pipe(res);
+            
+            fileStream.on('end', () => {
+                fs.unlink(tempFilePath, (err) => {
+                    if (err) console.error('Error deleting temp file:', err);
+                });
+            });
+            
+            return; // Exit early as we're handling the response
+        } catch (fallbackError) {
+            console.error(`Fallback also failed for ${platform}: ${fallbackError.message}`);
+            // Continue with the rest of the download logic (we'll fall through to the standard handling below)
+        }
+    }
+}
 
         if (url.includes('facebook.com') || url.includes('fb.watch') || url.includes('fb.com')) {
             // If it looks like a Facebook page URL and not a direct media URL, resolve it first
@@ -3296,7 +3975,308 @@ function getMediaType(platform) {
         return 'video';
     }
 }
+// Helper functions for platform-specific downloads
 
+// Generic direct download handler
+async function handleDirectDownload(url, outputPath, platform) {
+    console.log(`Performing direct download for ${platform}: ${url}`);
+    
+    // Set appropriate headers based on platform
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+    };
+    
+    // Add platform-specific referer
+    headers['Referer'] = `https://www.${platform}.com/`;
+    
+    // Add range header which helps with some platforms
+    headers['Range'] = 'bytes=0-';
+    
+    const downloadResponse = await fetch(url, {
+        headers,
+        redirect: 'follow'
+    });
+    
+    if (!downloadResponse.ok) {
+        throw new Error(`Direct download failed with status: ${downloadResponse.status}`);
+    }
+    
+    const fileStream = fs.createWriteStream(outputPath);
+    await new Promise((resolve, reject) => {
+        downloadResponse.body.pipe(fileStream);
+        downloadResponse.body.on('error', reject);
+        fileStream.on('finish', resolve);
+    });
+    
+    // Make sure file has content
+    const stat = fs.statSync(outputPath);
+    if (stat.size < 1000) { // Less than 1KB probably means an error
+        throw new Error(`Downloaded file is too small (${stat.size} bytes)`);
+    }
+    
+    console.log(`Successfully downloaded ${platform} file to ${outputPath}`);
+}
+
+// SoundCloud specific download handler
+async function handleSoundCloudDownload(url, outputPath) {
+    console.log('Using SoundCloud-specific download method');
+    
+    // First, get the page to extract metadata and client ID
+    const response = await fetch(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+    });
+    
+    if (!response.ok) {
+        throw new Error(`Failed to fetch SoundCloud page: ${response.status}`);
+    }
+    
+    const html = await response.text();
+    
+    // Try to extract client_id and track_id
+    let clientId = null;
+    let trackId = null;
+    
+    // Extract client ID
+    const clientIdMatch = html.match(/client_id=([^&"]+)/);
+    if (clientIdMatch && clientIdMatch[1]) {
+        clientId = clientIdMatch[1];
+    }
+    
+    // Extract track ID
+    const trackIdMatch = html.match(/https:\/\/api-v2\.soundcloud\.com\/tracks\/(\d+)/);
+    if (trackIdMatch && trackIdMatch[1]) {
+        trackId = trackIdMatch[1];
+    }
+    
+    if (!clientId || !trackId) {
+        throw new Error('Could not extract SoundCloud track information');
+    }
+    
+    // Get the track streaming info
+    const apiUrl = `https://api-v2.soundcloud.com/tracks/${trackId}/streams?client_id=${clientId}`;
+    const streamResponse = await fetch(apiUrl, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://soundcloud.com/',
+        }
+    });
+    
+    if (!streamResponse.ok) {
+        throw new Error(`Failed to fetch SoundCloud stream info: ${streamResponse.status}`);
+    }
+    
+    const streamInfo = await streamResponse.json();
+    
+    // Extract the stream URL
+    let streamUrl = '';
+    if (streamInfo.http_mp3_128_url) {
+        streamUrl = streamInfo.http_mp3_128_url;
+    } else if (streamInfo.hls_mp3_128_url) {
+        streamUrl = streamInfo.hls_mp3_128_url;
+    } else {
+        throw new Error('No suitable stream URL found');
+    }
+    
+    // Download the stream
+    console.log(`Downloading SoundCloud stream from: ${streamUrl}`);
+    const downloadResponse = await fetch(streamUrl, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://soundcloud.com/',
+        }
+    });
+    
+    if (!downloadResponse.ok) {
+        throw new Error(`Failed to download SoundCloud stream: ${downloadResponse.status}`);
+    }
+    
+    const fileStream = fs.createWriteStream(outputPath);
+    await new Promise((resolve, reject) => {
+        downloadResponse.body.pipe(fileStream);
+        downloadResponse.body.on('error', reject);
+        fileStream.on('finish', resolve);
+    });
+    
+    console.log(`Successfully downloaded SoundCloud track to: ${outputPath}`);
+}
+
+// Vimeo specific download handler
+async function handleVimeoDownload(url, outputPath) {
+    console.log('Using Vimeo-specific download method');
+    
+    // Get the Vimeo page
+    const response = await fetch(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+    });
+    
+    if (!response.ok) {
+        throw new Error(`Failed to fetch Vimeo page: ${response.status}`);
+    }
+    
+    const html = await response.text();
+    
+    // Try to extract the config JSON
+    const configMatch = html.match(/var config = ({.*?});/s);
+    if (!configMatch || !configMatch[1]) {
+        throw new Error('Could not find Vimeo config data');
+    }
+    
+    try {
+        // Replace single quotes with double quotes for JSON parsing
+        let configStr = configMatch[1].replace(/'/g, '"');
+        const config = JSON.parse(configStr);
+        
+        // Extract video URL from config
+        if (!config.video || !config.video.play || !config.video.play.progressive) {
+            throw new Error('Vimeo config does not contain progressive video data');
+        }
+        
+        const progressiveUrls = config.video.play.progressive;
+        if (!Array.isArray(progressiveUrls) || progressiveUrls.length === 0) {
+            throw new Error('No progressive video URLs found');
+        }
+        
+        // Sort by quality (highest first)
+        progressiveUrls.sort((a, b) => 
+            parseInt(b.height || 0) - parseInt(a.height || 0)
+        );
+        
+        const bestQuality = progressiveUrls[0];
+        const videoUrl = bestQuality.url;
+        
+        if (!videoUrl) {
+            throw new Error('Could not extract video URL');
+        }
+        
+        console.log(`Downloading Vimeo video from: ${videoUrl}`);
+        
+        // Download the video
+        const downloadResponse = await fetch(videoUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://vimeo.com/',
+            }
+        });
+        
+        if (!downloadResponse.ok) {
+            throw new Error(`Failed to download Vimeo video: ${downloadResponse.status}`);
+        }
+        
+        const fileStream = fs.createWriteStream(outputPath);
+        await new Promise((resolve, reject) => {
+            downloadResponse.body.pipe(fileStream);
+            downloadResponse.body.on('error', reject);
+            fileStream.on('finish', resolve);
+        });
+        
+        console.log(`Successfully downloaded Vimeo video to: ${outputPath}`);
+    } catch (parseError) {
+        console.error('Error parsing Vimeo config:', parseError);
+        throw parseError;
+    }
+}
+
+// Spotify specific download handler
+async function handleSpotifyDownload(url, outputPath) {
+    // For Spotify, we'll try youtube-dl with different options first
+    console.log('Using Spotify-specific download method');
+    
+    const options = {
+        output: outputPath,
+        extractAudio: true,
+        audioFormat: 'mp3',
+        audioQuality: 0,
+        noCheckCertificates: true,
+        noWarnings: true,
+        format: 'bestaudio',
+        addHeader: [
+            'user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
+            'referer:https://open.spotify.com/',
+            'accept:*/*',
+        ],
+    };
+    
+    try {
+        // Try one more time with yt-dlp using different options
+        await youtubeDl(url, options);
+        
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+            console.log(`Successfully downloaded Spotify audio to: ${outputPath}`);
+            return;
+        }
+    } catch (error) {
+        console.error('Spotify youtube-dl retry failed:', error);
+    }
+    
+    // If youtube-dl fails, try to get the track title and search it on YouTube
+    const response = await fetch(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+    });
+    
+    if (!response.ok) {
+        throw new Error(`Failed to fetch Spotify page: ${response.status}`);
+    }
+    
+    const html = await response.text();
+    
+    // Extract title and artist
+    let title = '';
+    let artist = '';
+    
+    const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i);
+    if (titleMatch && titleMatch[1]) {
+        title = titleMatch[1];
+    }
+    
+    const descMatch = html.match(/<meta property="og:description" content="([^"]+)"/i);
+    if (descMatch && descMatch[1]) {
+        const descParts = descMatch[1].split('·');
+        if (descParts.length > 0) {
+            artist = descParts[0].trim();
+        }
+    }
+    
+    if (!title) {
+        throw new Error('Could not extract Spotify track information');
+    }
+    
+    // Create a search query for YouTube
+    const searchQuery = `${artist} ${title} audio`;
+    console.log(`Searching YouTube for Spotify track: ${searchQuery}`);
+    
+    // Use youtube-dl to search YouTube
+    const searchUrl = `ytsearch1:${searchQuery}`;
+    
+    try {
+        await youtubeDl(searchUrl, {
+            output: outputPath,
+            extractAudio: true,
+            audioFormat: 'mp3',
+            audioQuality: 0,
+            noCheckCertificates: true,
+            noWarnings: true,
+            format: 'bestaudio',
+        });
+        
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+            console.log(`Successfully downloaded Spotify audio using YouTube search: ${outputPath}`);
+            return;
+        }
+    } catch (searchError) {
+        console.error('Spotify YouTube search fallback failed:', searchError);
+        throw searchError;
+    }
+    
+    throw new Error('All Spotify download methods failed');
+}
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
