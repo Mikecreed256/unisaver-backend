@@ -22,7 +22,7 @@
     "cors": "2.8.5",
     "express": "4.21.1",
     "fb-downloader": "1.0.3",
-    "nayan-videos-downloader": "1.0.5",
+    "nayan-videos-downloader": "0.1.5",
     "node-fetch": "2.7.0",
     "puppeteer-core": "21.3.8",
     "shaon-media-downloader": "2.5.0",
