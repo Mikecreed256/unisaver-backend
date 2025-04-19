@@ -1,15 +1,16 @@
 // controllers/youtubeController.js
 const axios = require('axios');
 const ytDlp = require('yt-dlp-exec');
-const ytdl = require('ytdl-core');
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
-const { ytdown } = require("nayan-videos-downloader");
 
-// Create temp directory.
+// API base URL for the external service
+const API_BASE_URL = 'https://savebackend.onrender.com/api';
+
+// Create temp directory
 const TEMP_DIR = path.join(__dirname, '../temp');
 if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR, { recursive: true });
@@ -18,13 +19,13 @@ if (!fs.existsSync(TEMP_DIR)) {
 async function downloadYouTubeVideo(url) {
     console.log(`Processing YouTube URL: ${url}`);
 
-    // Normalize mobile URL to desktop.
+    // Normalize mobile URL to desktop
     if (url.includes('m.youtube.com')) {
         url = url.replace(/m\.youtube\.com/, 'www.youtube.com');
         console.log(`Converted to desktop URL: ${url}`);
     }
 
-    // Extract video ID.
+    // Extract video ID
     let videoId = '';
     const videoIdMatch = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|\/|$)/);
     if (videoIdMatch && videoIdMatch[1]) {
@@ -34,81 +35,70 @@ async function downloadYouTubeVideo(url) {
         console.warn("Couldn't extract video ID from URL");
     }
 
-    // --- Attempt 1: Using nayan-videos-downloader ytdown function ---
+    // --- Attempt 1: Using savebackend API ---
     try {
-        console.log("Attempt 1: Using nayan-videos-downloader ytdown package");
-        const nayanResult = await ytdown(url);
+        console.log("Attempt 1: Using savebackend API");
         
-        // Check if the result is valid and has media data
-        if (nayanResult && nayanResult.status === true && nayanResult.media) {
-            console.log("nayan-videos-downloader successfully fetched YouTube data");
+        // Construct the API URL for YouTube info
+        const apiUrl = `${API_BASE_URL}/youtube?url=${encodeURIComponent(url)}`;
+        console.log(`Calling API: ${apiUrl}`);
+        
+        // Make the request to the API
+        const response = await axios.get(apiUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json'
+            },
+            timeout: 20000 // 20 seconds timeout
+        });
+        
+        // Check if we got a valid response
+        if (response.data && response.status === 200) {
+            console.log("savebackend API returned success response");
             
-            return {
-                title: nayanResult.media.title || 'YouTube Video',
-                high: nayanResult.media.high || nayanResult.media.url || '',
-                low: nayanResult.media.low || nayanResult.media.url || nayanResult.media.high || '',
-                thumbnail: nayanResult.media.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                source: 'nayan-videos-downloader'
-            };
-        }
-        
-        // If we get a response but status is false, throw specific error
-        if (nayanResult && nayanResult.status === false) {
-            throw new Error(nayanResult.msg || "Service unavailable");
-        }
-        
-        throw new Error('Invalid response from nayan-videos-downloader');
-    } catch (nayanError) {
-        console.error(`Attempt 1 failed: ${nayanError.message}`);
-        
-        // --- Attempt 2: Using ytdl-core ---
-        try {
-            console.log("Attempt 2: Using ytdl-core package");
+            // Extract the necessary data from the API response
+            const data = response.data;
             
-            // First validate if the video is available
-            const videoInfo = await ytdl.getInfo(url);
-            
-            if (videoInfo && videoInfo.formats && videoInfo.formats.length > 0) {
-                console.log(`ytdl-core found ${videoInfo.formats.length} formats`);
-                
-                // Filter and sort formats
-                // Get video formats with both audio and video
-                let formats = videoInfo.formats.filter(format => 
-                    format.hasVideo && format.hasAudio
-                );
-                
-                // If no formats with both video and audio, get the best video and audio separately
-                if (formats.length === 0) {
-                    formats = videoInfo.formats;
-                }
-                
-                // Sort by quality (highest first)
-                formats.sort((a, b) => {
-                    const qualityA = a.height || 0;
-                    const qualityB = b.height || 0;
-                    return qualityB - qualityA;
-                });
-                
-                // Get high and low quality options
-                const highQuality = formats[0];
-                const lowQuality = formats.length > 1 ? 
-                    formats[Math.min(formats.length - 1, 3)] : // Use the 4th format or last if less than 4
-                    highQuality;
+            if (data.formats && data.formats.length > 0) {
+                // Find the highest quality format with both video and audio
+                const highQualityFormat = data.formats.find(f => 
+                    f.hasVideo && f.hasAudio && (f.quality?.includes('High') || f.quality?.includes('720'))
+                ) || data.formats[0];
                 
                 return {
-                    title: videoInfo.videoDetails.title || 'YouTube Video',
-                    high: highQuality.url,
-                    low: lowQuality.url,
-                    thumbnail: videoInfo.videoDetails.thumbnails.length > 0 
-                        ? videoInfo.videoDetails.thumbnails[videoInfo.videoDetails.thumbnails.length - 1].url 
-                        : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                    source: 'ytdl-core'
+                    title: data.title || 'YouTube Video',
+                    high: highQualityFormat.url,
+                    low: data.formats.length > 1 ? data.formats[1].url : highQualityFormat.url,
+                    thumbnail: data.thumbnails && data.thumbnails.length > 0 ? data.thumbnails[0].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    source: 'savebackend-api'
                 };
             }
             
-            throw new Error('No formats found with ytdl-core');
-        } catch (ytdlError) {
-            console.error(`Attempt 2 failed: ${ytdlError.message}`);
+            throw new Error('No video formats found in API response');
+        }
+        
+        throw new Error(`API returned status: ${response.status}`);
+    } catch (apiError) {
+        console.error(`Attempt 1 failed: ${apiError.message}`);
+        
+        // --- Attempt 2: Call API download endpoint directly ---
+        try {
+            console.log("Attempt 2: Using savebackend download API endpoint");
+            
+            // Construct the direct download API URL
+            const downloadApiUrl = `${API_BASE_URL}/download?url=${encodeURIComponent(url)}`;
+            console.log(`Calling download API: ${downloadApiUrl}`);
+            
+            // We'll return this URL for the client to use directly
+            return {
+                title: 'YouTube Video',
+                high: downloadApiUrl,
+                low: downloadApiUrl,
+                thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                source: 'savebackend-download-api'
+            };
+        } catch (downloadApiError) {
+            console.error(`Attempt 2 failed: ${downloadApiError.message}`);
             
             // --- Attempt 3: yt-dlp (your existing code) ---
             try {
@@ -172,154 +162,33 @@ async function downloadYouTubeMusic(url) {
         }
     }
     
-    // --- Attempt 1: Using nayan-videos-downloader ytdown ---
+    // For YouTube Music, we want to prioritize audio formats
+    
+    // --- Attempt 1: Using savebackend API with audio param ---
     try {
-        console.log("Attempt 1: Using nayan-videos-downloader ytdown for music");
-        const nayanResult = await ytdown(url);
+        console.log("Attempt 1: Using savebackend API for audio");
         
-        if (nayanResult && nayanResult.status === true && nayanResult.media) {
-            console.log("nayan-videos-downloader successfully fetched YouTube Music data");
-            
-            // For YouTube Music, we prefer audio extraction
-            // We'll download to a local file to make sure we get audio format
-            const tempFilePath = path.join(TEMP_DIR, `ytmusic-${Date.now()}.mp3`);
-            
-            try {
-                // Try to download the audio using axios
-                const audioUrl = nayanResult.media.high || nayanResult.media.low || nayanResult.media.url;
-                
-                if (!audioUrl) {
-                    throw new Error("No audio URL available");
-                }
-                
-                console.log(`Downloading audio to ${tempFilePath} from ${audioUrl}`);
-                
-                const response = await axios({
-                    method: 'get',
-                    url: audioUrl,
-                    responseType: 'stream',
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                });
-                
-                const writer = fs.createWriteStream(tempFilePath);
-                
-                response.data.pipe(writer);
-                
-                await new Promise((resolve, reject) => {
-                    writer.on('finish', resolve);
-                    writer.on('error', reject);
-                });
-                
-                console.log(`Audio download complete: ${tempFilePath}`);
-                const audioStreamUrl = `/api/stream-file?path=${encodeURIComponent(tempFilePath)}`;
-                
-                return {
-                    title: nayanResult.media.title || 'YouTube Music',
-                    high: audioStreamUrl,
-                    low: audioStreamUrl,
-                    thumbnail: nayanResult.media.thumbnail || '',
-                    localFilePath: tempFilePath,
-                    isAudio: true,
-                    source: 'nayan-videos-downloader-audio'
-                };
-            } catch (downloadError) {
-                console.error(`Error downloading audio: ${downloadError.message}`);
-                
-                // If download fails, return direct URLs
-                return {
-                    title: nayanResult.media.title || 'YouTube Music',
-                    high: nayanResult.media.high || nayanResult.media.url || '',
-                    low: nayanResult.media.low || nayanResult.media.url || nayanResult.media.high || '',
-                    thumbnail: nayanResult.media.thumbnail || '',
-                    isAudio: true,
-                    source: 'nayan-videos-downloader'
-                };
-            }
-        }
+        // Construct the API URL for YouTube audio
+        const apiUrl = `${API_BASE_URL}/audio?url=${encodeURIComponent(url)}`;
+        console.log(`Calling audio API: ${apiUrl}`);
         
-        throw new Error('Invalid response from nayan-videos-downloader');
-    } catch (nayanError) {
-        console.error(`YouTube Music nayan-videos-downloader attempt failed: ${nayanError.message}`);
+        // We'll return this directly for the client to use
+        return {
+            title: 'YouTube Music',
+            high: apiUrl,
+            low: apiUrl,
+            thumbnail: '', // API will handle thumbnails
+            isAudio: true,
+            source: 'savebackend-audio-api'
+        };
+    } catch (apiError) {
+        console.error(`Audio API attempt failed: ${apiError.message}`);
         
-        // Fall back to ytdl-core for audio extraction
-        try {
-            console.log("Attempting to download YouTube Music with ytdl-core");
-            
-            // Get video info
-            const videoInfo = await ytdl.getInfo(url);
-            
-            if (videoInfo && videoInfo.formats && videoInfo.formats.length > 0) {
-                console.log(`Found ${videoInfo.formats.length} formats`);
-                
-                // Filter for audio-only formats
-                const audioFormats = videoInfo.formats.filter(format => 
-                    format.hasAudio && !format.hasVideo
-                );
-                
-                // If no audio-only formats, use formats with both audio and video
-                const formats = audioFormats.length > 0 ? audioFormats : videoInfo.formats.filter(format => 
-                    format.hasAudio
-                );
-                
-                if (formats.length === 0) {
-                    throw new Error('No audio formats found');
-                }
-                
-                // Sort by audio quality (highest bitrate first)
-                formats.sort((a, b) => {
-                    const bitrateA = a.audioBitrate || 0;
-                    const bitrateB = b.audioBitrate || 0;
-                    return bitrateB - bitrateA;
-                });
-                
-                // Get high and low quality options
-                const highQuality = formats[0];
-                const lowQuality = formats.length > 1 ? formats[formats.length - 1] : highQuality;
-                
-                // Download to a local file (recommended for audio)
-                const tempFilePath = path.join(TEMP_DIR, `ytmusic-${Date.now()}.mp3`);
-                
-                console.log(`Downloading audio to ${tempFilePath}`);
-                const writeStream = fs.createWriteStream(tempFilePath);
-                ytdl(url, { quality: highQuality.itag, filter: 'audioonly' }).pipe(writeStream);
-                
-                return new Promise((resolve, reject) => {
-                    writeStream.on('finish', () => {
-                        console.log(`Audio download complete: ${tempFilePath}`);
-                        const audioUrl = `/api/stream-file?path=${encodeURIComponent(tempFilePath)}`;
-                        resolve({
-                            title: videoInfo.videoDetails.title || 'YouTube Music',
-                            high: audioUrl,
-                            low: audioUrl,
-                            thumbnail: videoInfo.videoDetails.thumbnails.length > 0 
-                                ? videoInfo.videoDetails.thumbnails[videoInfo.videoDetails.thumbnails.length - 1].url 
-                                : '',
-                            localFilePath: tempFilePath,
-                            isAudio: true,
-                            source: 'ytdl-core-audio'
-                        });
-                    });
-                    
-                    writeStream.on('error', (err) => {
-                        console.error('Error writing audio file:', err);
-                        fs.unlink(tempFilePath, () => {});
-                        reject(err);
-                    });
-                });
-            }
-            
-            throw new Error('No formats found with ytdl-core');
-        } catch (ytdlError) {
-            console.error(`YouTube Music ytdl-core attempt failed: ${ytdlError.message}`);
-            
-            // Fall back to the regular YouTube downloader as last resort
-            console.log("Falling back to regular YouTube video downloader");
-            const result = await downloadYouTubeVideo(url);
-            result.isAudio = true; // Mark as audio even though it's a video format
-            return result;
-        }
+        // Fall back to the regular YouTube video downloader
+        console.log("Falling back to regular YouTube video downloader");
+        const result = await downloadYouTubeVideo(url);
+        result.isAudio = true; // Mark as audio even though it's a video format
+        return result;
     }
 }
 
