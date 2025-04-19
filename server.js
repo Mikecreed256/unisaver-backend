@@ -2322,6 +2322,41 @@ app.get('/api/twitter', async (req, res) => {
         });
     }
 });
+app.get('/api/youtube-music', async (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).json({ error: 'URL is required' });
+  }
+
+  try {
+    const ytData = await youtubeController.downloadYouTubeMusic(url);
+
+    // Format the response to match your existing API format
+    const isLocalFile = !!ytData.localFilePath;
+    
+    return res.json({
+      title: ytData.title || 'YouTube Music',
+      formats: [{
+        itag: 'ytmusic_high',
+        quality: 'High Quality Audio',
+        mimeType: 'audio/mp3',
+        url: ytData.high || '',
+        hasAudio: true,
+        hasVideo: false,
+      }],
+      thumbnails: [{ url: ytData.thumbnail || 'https://via.placeholder.com/300x150' }],
+      platform: 'youtube_music',
+      mediaType: 'audio',
+      // If we have a local file, we already have the streaming URL
+      directUrl: isLocalFile ? ytData.high : `/api/direct?url=${encodeURIComponent(ytData.high)}&referer=youtube.com`,
+      source: ytData.source || 'unknown',
+      isAudio: true
+    });
+  } catch (error) {
+    console.error('YouTube Music endpoint error:', error);
+    res.status(500).json({ error: 'YouTube Music processing failed', details: error.message });
+  }
+});
 app.get('/api/pinterest', async (req, res) => {
     try {
       const { url } = req.query;
