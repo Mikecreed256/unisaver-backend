@@ -38,6 +38,19 @@ async function downloadYouTubeVideo(url) {
     try {
         console.log(`Processing YouTube URL: ${url}`);
         
+        // Check if this is just a homepage URL (not a specific video)
+        if (url === 'https://www.youtube.com/' || 
+            url === 'https://m.youtube.com/' || 
+            url === 'https://youtube.com/' ||
+            url === 'https://youtu.be/') {
+            console.log("This is a YouTube homepage URL, not a specific video URL");
+            return {
+                success: false,
+                error: "Please provide a specific YouTube video URL, not the homepage",
+                homepage: true
+            };
+        }
+        
         // Check if this is a search URL
         if (url.includes('/results') || url.includes('search_query=')) {
             console.log("This appears to be a YouTube search URL, not a direct video URL");
@@ -67,7 +80,7 @@ async function downloadYouTubeVideo(url) {
             }
         }
         
-        // Check if we have a valid video ID
+        // Check if we have a valid video ID - RETURN EARLY if no ID
         if (!videoId) {
             console.log("No valid YouTube video ID found in URL");
             return {
@@ -1052,6 +1065,20 @@ async function downloadYouTubeMusic(url) {
     try {
         console.log(`Processing YouTube Music URL: ${url}`);
         
+        // Check if this is just a homepage URL (not a specific video)
+        if (url === 'https://www.youtube.com/' || 
+            url === 'https://m.youtube.com/' || 
+            url === 'https://youtube.com/' ||
+            url === 'https://youtu.be/' ||
+            url === 'https://music.youtube.com/') {
+            console.log("This is a YouTube homepage URL, not a specific video URL");
+            return {
+                success: false,
+                error: "Please provide a specific YouTube video URL, not the homepage",
+                homepage: true
+            };
+        }
+        
         // Check if this is a search URL
         if (url.includes('/results') || url.includes('search_query=')) {
             console.log("This appears to be a YouTube search URL, not a direct video URL");
@@ -1083,7 +1110,7 @@ async function downloadYouTubeMusic(url) {
             }
         }
         
-        // Check if we have a valid video ID
+        // Check if we have a valid video ID - RETURN EARLY if no ID
         if (!videoId) {
             console.log("No valid YouTube video ID found in URL");
             return {
