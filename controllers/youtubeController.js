@@ -1,16 +1,8 @@
 // controllers/youtubeController.js
-const fs = require('fs');
-const path = require('path');
 const { ytdown } = require("nayan-videos-downloader");
 
-// Create temp directory if it doesn't exist
-const TEMP_DIR = path.join(__dirname, '../temp');
-if (!fs.existsSync(TEMP_DIR)) {
-    fs.mkdirSync(TEMP_DIR, { recursive: true });
-}
-
 /**
- * Download YouTube video using nayan-videos-downloader
+ * Download YouTube video using nayan-videos-downloader only
  * @param {string} url - YouTube video URL
  * @returns {Promise<Object>} - Video data
  */
@@ -72,7 +64,7 @@ async function downloadYouTubeVideo(url) {
         // Thumbnail will be consistent regardless of download method
         const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
         
-        // Use ytdown from nayan-videos-downloader
+        // Use ytdown from nayan-videos-downloader - ONLY STEP
         console.log("Using ytdown to get download links");
         const result = await ytdown(url);
         
@@ -82,6 +74,7 @@ async function downloadYouTubeVideo(url) {
             if (result.data) {
                 console.log("Processing ytdown data response format");
                 
+                // Return the data directly without any further processing
                 return {
                     title: result.data.title || 'YouTube Video',
                     high: result.data.video_hd || result.data.video || '',
@@ -107,37 +100,39 @@ async function downloadYouTubeVideo(url) {
                 throw new Error("Unexpected response structure from ytdown");
             }
         } else {
+            // If ytdown status is false, return this directly to the client
             console.warn("Invalid response from ytdown:", result);
-            throw new Error(result?.msg || "Failed to process YouTube URL");
+            return {
+                success: false,
+                error: result?.msg || "Failed to process YouTube URL",
+                youtube_fallback: true,
+                title: 'YouTube Video',
+                high: `https://www.youtube.com/watch?v=${videoId}`,
+                low: `https://www.youtube.com/watch?v=${videoId}`,
+                thumbnail: thumbnail,
+                embed_url: `https://www.youtube.com/embed/${videoId}`,
+            };
         }
     } catch (error) {
         console.error(`YouTube download failed: ${error.message}`);
         
-        // Fallback to direct YouTube link if we have a video ID
-        const videoId = extractVideoId(url);
-        if (videoId) {
-            return {
-                success: false,
-                title: 'YouTube Video',
-                high: `https://www.youtube.com/watch?v=${videoId}`,
-                low: `https://www.youtube.com/watch?v=${videoId}`,
-                thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                embed_url: `https://www.youtube.com/embed/${videoId}`,
-                error: error.message,
-                youtube_fallback: true,
-                source: 'redirect'
-            };
-        } else {
-            return {
-                success: false,
-                error: "Invalid YouTube URL or cannot extract video ID",
-            };
-        }
+        // Simple fallback for any errors - just return a link to YouTube
+        const videoId = extractVideoId(url) || '';
+        return {
+            success: false,
+            error: error.message,
+            youtube_fallback: true,
+            title: 'YouTube Video',
+            high: videoId ? `https://www.youtube.com/watch?v=${videoId}` : '',
+            low: videoId ? `https://www.youtube.com/watch?v=${videoId}` : '',
+            thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '',
+            embed_url: videoId ? `https://www.youtube.com/embed/${videoId}` : '',
+        };
     }
 }
 
 /**
- * Download YouTube music audio
+ * Download YouTube music audio - only uses ytdown
  * @param {string} url - YouTube music URL
  * @returns {Promise<Object>} - Audio data
  */
@@ -202,7 +197,7 @@ async function downloadYouTubeMusic(url) {
         // Thumbnail will be consistent regardless of download method
         const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
         
-        // Use ytdown from nayan-videos-downloader for music
+        // Use ytdown from nayan-videos-downloader for music - ONLY STEP
         console.log("Using ytdown for YouTube Music");
         const result = await ytdown(url);
         
@@ -238,34 +233,36 @@ async function downloadYouTubeMusic(url) {
                 throw new Error("Unexpected response structure from ytdown for music");
             }
         } else {
+            // If ytdown status is false, return this directly to the client
             console.warn("Invalid response from ytdown for music:", result);
-            throw new Error(result?.msg || "Failed to process YouTube Music URL");
+            return {
+                success: false,
+                error: result?.msg || "Failed to process YouTube Music URL",
+                youtube_fallback: true,
+                title: 'YouTube Music',
+                high: `https://www.youtube.com/watch?v=${videoId}`,
+                low: `https://www.youtube.com/watch?v=${videoId}`,
+                thumbnail: thumbnail,
+                embed_url: `https://www.youtube.com/embed/${videoId}`,
+                isAudio: true,
+            };
         }
     } catch (error) {
         console.error(`YouTube music download failed: ${error.message}`);
         
-        // Fallback to direct YouTube link if we have a video ID
-        const videoId = extractVideoId(url);
-        if (videoId) {
-            return {
-                success: false,
-                title: 'YouTube Music',
-                high: `https://www.youtube.com/watch?v=${videoId}`,
-                low: `https://www.youtube.com/watch?v=${videoId}`,
-                thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                embed_url: `https://www.youtube.com/embed/${videoId}`,
-                error: error.message,
-                youtube_fallback: true,
-                isAudio: true,
-                source: 'redirect'
-            };
-        } else {
-            return {
-                success: false,
-                error: "Invalid YouTube URL or cannot extract video ID",
-                isAudio: true
-            };
-        }
+        // Simple fallback for any errors
+        const videoId = extractVideoId(url) || '';
+        return {
+            success: false,
+            error: error.message,
+            youtube_fallback: true,
+            title: 'YouTube Music',
+            high: videoId ? `https://www.youtube.com/watch?v=${videoId}` : '',
+            low: videoId ? `https://www.youtube.com/watch?v=${videoId}` : '',
+            thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '',
+            embed_url: videoId ? `https://www.youtube.com/embed/${videoId}` : '',
+            isAudio: true,
+        };
     }
 }
 
