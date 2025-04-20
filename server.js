@@ -2908,35 +2908,6 @@ app.get('/api/youtube', async (req, res) => {
     res.status(500).json({ error: 'YouTube processing failed', details: error.message });
   }
 });
-
-// YouTube download endpoint - redirect to the video URL instead of downloading on server
-app.get('/api/download', async (req, res) => {
-  try {
-    const { url, itag } = req.query;
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
-
-    console.log(`Processing download - URL: ${url}, format: ${itag || 'yt_high'}`);
-    
-    // Check if it's a YouTube URL
-    const platform = identifyPlatform(url);
-    if (platform === 'youtube') {
-      // Use the YouTube controller to get the video URL
-      const ytData = await youtubeController.downloadYouTubeVideo(url);
-      
-      // If we have a direct URL from ytdown, redirect to it
-      if (ytData.high) {
-        console.log(`Redirecting to YouTube video URL: ${ytData.high.substring(0, 100)}...`);
-        return res.redirect(ytData.high);
-      }
-      
-      // If no direct URL, return error
-      return res.status(404).json({ 
-        error: 'No direct download URL available', 
-        youtube_fallback: true,
-        embedUrl: `https://www.youtube.com/embed/${extractVideoId(url)}`
-      });
     
 // Audio platforms handler (Spotify, SoundCloud, etc.)
 app.get('/api/audio-platform', async (req, res) => {
