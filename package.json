@@ -20,6 +20,7 @@
     "btch-downloader": "2.8.1",
     "jsdom": "24.0.0",
     "cors": "2.8.5",
+    "s-ytdl": "1.1.4",
     "express": "4.21.1",
     "fb-downloader": "1.0.3",
     "nayan-videos-downloader": "0.1.5",
