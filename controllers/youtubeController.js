@@ -113,7 +113,7 @@ async function getYouTubeEmbedData(videoId) {
             throw new Error("This content isn't available");
         }
         
-        if (html.includes('confirm you are a human') || html.includes('confirm you\\'re not a robot')) {
+        if (html.includes('confirm you are a human') || html.includes('not a robot')) {
             throw new Error("Sign in to confirm you're not a bot");
         }
         
