@@ -81,6 +81,8 @@ function classifyYouTubeError(errorMessage) {
         return { type: "RATE_LIMITED", userMessage: "Too many requests to YouTube. Please try again later." };
     } else if (errorMessage.includes("403") || errorMessage.includes("Forbidden")) {
         return { type: "ACCESS_DENIED", userMessage: "Access denied. This video may be region-restricted." };
+    } else if (errorMessage.includes("Sign in to confirm you're not a bot") || errorMessage.includes("cookies")) {
+        return { type: "CAPTCHA_REQUIRED", userMessage: "YouTube requires verification for this video." };
     } else if (errorMessage.includes("Internet") || errorMessage.includes("network") || 
               errorMessage.includes("timeout") || errorMessage.includes("ETIMEDOUT")) {
         return { type: "NETWORK_ERROR", userMessage: "Network error. Please check your connection." };
@@ -109,6 +111,10 @@ async function getYouTubeEmbedData(videoId) {
         
         if (html.includes('VIDEO_UNAVAILABLE') || html.includes('Video unavailable')) {
             throw new Error("This content isn't available");
+        }
+        
+        if (html.includes('confirm you are a human') || html.includes('confirm you\\'re not a robot')) {
+            throw new Error("Sign in to confirm you're not a bot");
         }
         
         let playerResponse = null;
@@ -204,6 +210,34 @@ async function downloadYouTubeVideo(url) {
 
         const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
         
+        // First, do a quick check to avoid repeated attempts for captcha-protected videos
+        try {
+            const checkUrl = `https://www.youtube.com/embed/${videoId}`;
+            const response = await fetch(checkUrl, { 
+                method: 'HEAD',
+                headers: {
+                    'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+                }
+            });
+            
+            // If we get a redirect to accounts.google.com, it's likely a captcha
+            const location = response.headers.get('location') || '';
+            if (location.includes('accounts.google.com') || response.status === 302) {
+                return {
+                    success: false,
+                    error: "YouTube requires verification for this video.",
+                    errorType: "CAPTCHA_REQUIRED",
+                    url_only: true,
+                    embed_url: `https://www.youtube.com/embed/${videoId}`,
+                    thumbnail: thumbnail,
+                    youtube_fallback: true
+                };
+            }
+        } catch (checkError) {
+            console.log(`Preliminary check error: ${checkError.message}`);
+            // Continue with normal flow if check fails
+        }
+        
         const fetchVideoData = async () => {
             try {
                 const embedData = await getYouTubeEmbedData(videoId);
@@ -222,6 +256,11 @@ async function downloadYouTubeVideo(url) {
                 }
             } catch (embedError) {
                 console.error(`Embed page data extraction error: ${embedError.message}`);
+                
+                // If it's a captcha issue, stop here and return specific response
+                if (embedError.message.includes("not a bot") || embedError.message.includes("confirm you")) {
+                    throw new Error("Sign in to confirm you're not a bot");
+                }
             }
             
             try {
@@ -258,6 +297,13 @@ async function downloadYouTubeVideo(url) {
                 throw new Error("Invalid response from ytdown");
             } catch (ytdownError) {
                 console.error(`ytdown error: ${ytdownError.message}`);
+                
+                // Check for captcha in ytdown error
+                if (ytdownError.message.includes("Sign in to confirm") || 
+                   ytdownError.message.includes("not a bot") || 
+                   ytdownError.message.includes("cookies")) {
+                    throw new Error("Sign in to confirm you're not a bot");
+                }
             }
             
             return {
@@ -287,6 +333,18 @@ async function downloadYouTubeVideo(url) {
                     errorType: errorInfo.type,
                     embed_url: `https://www.youtube.com/embed/${videoId}`,
                     thumbnail: thumbnail
+                };
+            }
+            
+            if (errorInfo.type === "CAPTCHA_REQUIRED") {
+                return {
+                    success: false,
+                    error: errorInfo.userMessage,
+                    errorType: errorInfo.type,
+                    url_only: true,
+                    embed_url: `https://www.youtube.com/embed/${videoId}`,
+                    thumbnail: thumbnail,
+                    youtube_fallback: true
                 };
             }
             
