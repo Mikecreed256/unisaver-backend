@@ -210,36 +210,61 @@ async function downloadYouTubeVideo(url) {
 
         const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
         
-        // First, do a quick check to avoid repeated attempts for captcha-protected videos
+        // Quick check to avoid unnecessary processing
         try {
-            const checkUrl = `https://www.youtube.com/embed/${videoId}`;
-            const response = await fetch(checkUrl, { 
-                method: 'HEAD',
+            const checkUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+            const response = await fetch(checkUrl, {
+                method: 'GET',
                 headers: {
                     'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
                 }
             });
             
-            // If we get a redirect to accounts.google.com, it's likely a captcha
-            const location = response.headers.get('location') || '';
-            if (location.includes('accounts.google.com') || response.status === 302) {
+            if (response.status === 404) {
                 return {
                     success: false,
-                    error: "YouTube requires verification for this video.",
-                    errorType: "CAPTCHA_REQUIRED",
-                    url_only: true,
+                    error: "This video is unavailable, private, or deleted.",
+                    errorType: "VIDEO_UNAVAILABLE",
                     embed_url: `https://www.youtube.com/embed/${videoId}`,
-                    thumbnail: thumbnail,
-                    youtube_fallback: true
+                    thumbnail: thumbnail
                 };
             }
         } catch (checkError) {
-            console.log(`Preliminary check error: ${checkError.message}`);
+            console.log(`Availability check error: ${checkError.message}`);
             // Continue with normal flow if check fails
         }
         
         const fetchVideoData = async () => {
+            // FALLBACK FIRST: Set up the embed fallback that will always work
+            const embedFallback = {
+                success: true,
+                title: 'YouTube Video',
+                url_only: true,
+                is_embed: true,
+                high: `https://www.youtube.com/embed/${videoId}?autoplay=1`,
+                low: `https://www.youtube.com/watch?v=${videoId}`,
+                thumbnail: thumbnail,
+                embed_url: `https://www.youtube.com/embed/${videoId}`,
+                youtube_fallback: true,
+                source: 'embed-only'
+            };
+            
             try {
+                // Extract info from OEmbed first for reliable title
+                try {
+                    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+                    const oembedResponse = await fetch(oembedUrl);
+                    
+                    if (oembedResponse.ok) {
+                        const oembedData = await oembedResponse.json();
+                        if (oembedData && oembedData.title) {
+                            embedFallback.title = oembedData.title;
+                        }
+                    }
+                } catch (oembedError) {
+                    console.log(`OEmbed data fetch error: ${oembedError.message}`);
+                }
+                
                 const embedData = await getYouTubeEmbedData(videoId);
                 
                 if (embedData.title && (embedData.hlsManifestUrl || embedData.dashManifestUrl)) {
@@ -257,9 +282,16 @@ async function downloadYouTubeVideo(url) {
             } catch (embedError) {
                 console.error(`Embed page data extraction error: ${embedError.message}`);
                 
-                // If it's a captcha issue, stop here and return specific response
-                if (embedError.message.includes("not a bot") || embedError.message.includes("confirm you")) {
-                    throw new Error("Sign in to confirm you're not a bot");
+                // If it's a captcha issue or content not available, don't try other methods
+                if (embedError.message.includes("not a bot") || 
+                    embedError.message.includes("confirm you") ||
+                    embedError.message.includes("content isn't available")) {
+                    
+                    if (embedError.message.includes("content isn't available")) {
+                        throw new Error("This content isn't available");
+                    } else {
+                        throw new Error("Sign in to confirm you're not a bot");
+                    }
                 }
             }
             
@@ -267,34 +299,100 @@ async function downloadYouTubeVideo(url) {
                 console.log("Trying ytdown method...");
                 const result = await ytdown(url);
                 
+                // If service is down, throw error to move to fallback
                 if (result && result.status === false) {
+                    console.warn(`ytdown service is offline: ${result.msg || "Unknown error"}`);
                     throw new Error(result.msg || "ytdown service is offline");
                 }
                 
                 if (result && result.status === true) {
                     if (result.data) {
-                        return {
-                            success: true,
-                            title: result.data.title || 'YouTube Video',
-                            high: result.data.video_hd || result.data.video || '',
-                            low: result.data.video || '',
-                            thumbnail: result.data.thumb || thumbnail,
-                            source: 'nayan-videos-downloader'
-                        };
+                        // Validate the URLs before returning
+                        const highUrl = result.data.video_hd || result.data.video || '';
+                        const lowUrl = result.data.video || '';
+                        
+                        if (highUrl || lowUrl) {
+                            // Validate at least one URL is accessible
+                            try {
+                                const urlToCheck = highUrl || lowUrl;
+                                const headResponse = await fetch(urlToCheck, { 
+                                    method: 'HEAD',
+                                    timeout: 5000 
+                                });
+                                
+                                // If we get a valid response and it's a media type
+                                if (headResponse.ok) {
+                                    const contentType = headResponse.headers.get('content-type') || '';
+                                    if (contentType.includes('video/') || 
+                                        contentType.includes('audio/') || 
+                                        contentType.includes('application/octet-stream')) {
+                                        
+                                        return {
+                                            success: true,
+                                            title: result.data.title || embedFallback.title,
+                                            high: highUrl,
+                                            low: lowUrl,
+                                            thumbnail: result.data.thumb || thumbnail,
+                                            source: 'nayan-videos-downloader'
+                                        };
+                                    }
+                                }
+                                
+                                // If content type is not valid, fall back to embed
+                                console.warn(`URL validation failed: invalid content type for ${urlToCheck}`);
+                                throw new Error("Invalid media content type");
+                                
+                            } catch (validationError) {
+                                console.warn(`URL validation error: ${validationError.message}`);
+                                // Continue to fallback
+                                throw validationError;
+                            }
+                        }
                     } 
                     else if (result.media) {
-                        return {
-                            success: true,
-                            title: result.media.title || 'YouTube Video',
-                            high: result.media.high || '',
-                            low: result.media.low || result.media.high || '',
-                            thumbnail: result.media.thumbnail || thumbnail,
-                            source: 'nayan-videos-downloader'
-                        };
+                        // Validate media URLs
+                        const highUrl = result.media.high || '';
+                        const lowUrl = result.media.low || result.media.high || '';
+                        
+                        if (highUrl || lowUrl) {
+                            try {
+                                const urlToCheck = highUrl || lowUrl;
+                                const headResponse = await fetch(urlToCheck, { 
+                                    method: 'HEAD',
+                                    timeout: 5000 
+                                });
+                                
+                                if (headResponse.ok) {
+                                    const contentType = headResponse.headers.get('content-type') || '';
+                                    if (contentType.includes('video/') || 
+                                        contentType.includes('audio/') || 
+                                        contentType.includes('application/octet-stream')) {
+                                        
+                                        return {
+                                            success: true,
+                                            title: result.media.title || embedFallback.title,
+                                            high: highUrl,
+                                            low: lowUrl,
+                                            thumbnail: result.media.thumbnail || thumbnail,
+                                            source: 'nayan-videos-downloader'
+                                        };
+                                    }
+                                }
+                                
+                                console.warn(`URL validation failed: invalid content type for ${urlToCheck}`);
+                                throw new Error("Invalid media content type");
+                                
+                            } catch (validationError) {
+                                console.warn(`URL validation error: ${validationError.message}`);
+                                throw validationError;
+                            }
+                        }
                     }
                 }
                 
-                throw new Error("Invalid response from ytdown");
+                // If we reached here without returning, ytdown didn't provide valid media
+                throw new Error("No valid media URLs from ytdown");
+                
             } catch (ytdownError) {
                 console.error(`ytdown error: ${ytdownError.message}`);
                 
@@ -304,19 +402,15 @@ async function downloadYouTubeVideo(url) {
                    ytdownError.message.includes("cookies")) {
                     throw new Error("Sign in to confirm you're not a bot");
                 }
+                
+                // If ytdown failed with content unavailable, propagate that
+                if (ytdownError.message.includes("content isn't available")) {
+                    throw new Error("This content isn't available");
+                }
             }
             
-            return {
-                success: true,
-                title: 'YouTube Video',
-                url_only: true,
-                high: `https://www.youtube.com/embed/${videoId}?autoplay=1`,
-                low: `https://www.youtube.com/watch?v=${videoId}`,
-                thumbnail: thumbnail,
-                embed_url: `https://www.youtube.com/embed/${videoId}`,
-                youtube_fallback: true,
-                source: 'embed-only'
-            };
+            // If all extraction methods fail, use the embed fallback
+            return embedFallback;
         };
         
         try {
@@ -338,20 +432,26 @@ async function downloadYouTubeVideo(url) {
             
             if (errorInfo.type === "CAPTCHA_REQUIRED") {
                 return {
-                    success: false,
+                    success: true,  // Change to true so client attempts to play it
                     error: errorInfo.userMessage,
                     errorType: errorInfo.type,
                     url_only: true,
+                    is_embed: true,
+                    title: "YouTube Video", 
+                    high: `https://www.youtube.com/embed/${videoId}?autoplay=1`,
+                    low: `https://www.youtube.com/watch?v=${videoId}`,
                     embed_url: `https://www.youtube.com/embed/${videoId}`,
                     thumbnail: thumbnail,
                     youtube_fallback: true
                 };
             }
             
+            // Default fallback for other errors
             return {
                 success: true,
                 title: 'YouTube Video',
                 url_only: true,
+                is_embed: true,
                 high: `https://www.youtube.com/embed/${videoId}?autoplay=1`,
                 low: `https://www.youtube.com/watch?v=${videoId}`,
                 thumbnail: thumbnail,
@@ -367,10 +467,14 @@ async function downloadYouTubeVideo(url) {
         
         if (videoId) {
             return {
-                success: false,
+                success: true,  // Change to true so client attempts to play via embed
                 error: errorInfo.userMessage,
                 errorType: errorInfo.type,
                 url_only: true,
+                is_embed: true,
+                title: "YouTube Video",
+                high: `https://www.youtube.com/embed/${videoId}?autoplay=1`,
+                low: `https://www.youtube.com/watch?v=${videoId}`,
                 embed_url: `https://www.youtube.com/embed/${videoId}`,
                 thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
             };
