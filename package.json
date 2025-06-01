@@ -23,7 +23,6 @@
     "fb-downloader": "1.0.3",
     "fluent-ffmpeg": "2.1.2",
     "jsdom": "24.0.0",
-    "nayan-videos-downloader": "0.0.9",
     "node-fetch": "2.7.0",
     "path": "0.12.7",
     "puppeteer-core": "21.3.8",
