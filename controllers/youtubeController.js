@@ -148,7 +148,7 @@ async function downloadYouTubeVideo(url) {
             }
         }
     }
-}
+
 
 /** Download YouTube as MP3 (unchanged) **/
 async function downloadYouTubeMusic(url) { /* ... */ }
