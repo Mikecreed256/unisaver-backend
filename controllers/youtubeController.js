@@ -5,7 +5,6 @@ const querystring = require('querystring');
 const axios = require('axios');
 const ytdl = require('ytdl-core');
 const ffmpeg = require('fluent-ffmpeg');
-const { ytdown } = require('nayan-videos-downloader');
 const youtubeDl = require('youtube-dl-exec');
 
 // Optional - Use ffmpeg installer if ffmpeg isn't already installed on your system
@@ -98,17 +97,17 @@ async function downloadYouTubeVideo(url) {
         });
     } catch (e1) {
         // Method 2: nayan-videos-downloader
-        try {
-            console.log('Attempting method 2: nayan-videos-downloader');
-            const result = await ytdown(url);
-            if (!result.success) throw new Error(result.message || 'nayan failed');
-            return {
-                success: true,
-                title: result.data.title,
-                high:  result.data.high || result.data.url,
-                low:   result.data.low  || result.data.url,
-                thumbnail: result.data.thumb,
-                source: 'nayan-videos-downloader'
+        //try {
+            //console.log('Attempting method 2: nayan-videos-downloader');
+            //const result = await ytdown(url);
+            //if (!result.success) throw new Error(result.message || 'nayan failed');
+            //return {
+               // success: true,
+               // title: result.data.title,
+               // high:  result.data.high || result.data.url,
+               // low:   result.data.low  || result.data.url,
+               // thumbnail: result.data.thumb,
+                //source: 'nayan-videos-downloader'
             };
         } catch (e2) {
             console.error('Method 2 failed:', e2.stack);
