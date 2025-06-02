@@ -32,7 +32,7 @@
     "tinyurl": "1.1.7",
     "youtube-dl-exec": "2.4.6",
     "yt-dlp-exec": "1.0.0",
-    "ytdlp-nodejs": "1.0.4",
+    "ytdlp-nodejs": "2.1.0",
     "ytdl-core": "4.11.5"
   },
   "engines": {
