@@ -1,7 +1,11 @@
 // controllers/youtubeController.js
 
-const ytdl = require('ytdl-core');
-const path = require('path');
+const axios = require('axios');
+const API_BASE_URL = 'https://savebackend.onrender.com/api'; 
+// ─────────────────────────────────────────────────────────
+// This is your “good-for-YouTube” server endpoint base.
+// When a request arrives here, we re‐POST it to 
+// https://savebackend.onrender.com/api/download and return the result.
 
 exports.download = async (req, res) => {
   const { url } = req.body;
@@ -12,55 +16,24 @@ exports.download = async (req, res) => {
     });
   }
 
-  // Simple YouTube URL check
-  const isValid = /(?:youtube\.com\/watch\?v=|youtu\.be\/)/i.test(url);
-  if (!isValid) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid YouTube URL'
-    });
-  }
-
   try {
-    const info = await ytdl.getInfo(url);
-    const formats = info.formats
-      .filter(f => f.hasVideo && f.hasAudio && f.url)
-      .sort((a, b) => (b.height || 0) - (a.height || 0));
+    // Forward the same JSON‐body to your “good” download service:
+    const response = await axios.post(`${API_BASE_URL}/download`, { url });
 
-    if (formats.length === 0) {
-      return res.status(500).json({
+    // If that service returns { success: true, data: { … } }, just pass it through:
+    if (response.data && response.data.success) {
+      return res.json(response.data);
+    } else {
+      return res.status(response.status).json({
         success: false,
-        message: 'No downloadable formats found'
+        message: response.data.message || 'External service failed'
       });
     }
-
-    const bestFormat = formats[0];
-    const directUrl = bestFormat.url;
-
-    // Sanitize title for filename
-    const rawTitle = info.videoDetails.title || 'video';
-    const sanitizedTitle = rawTitle
-      .replace(/[<>:"/\\|?*]/g, '_')
-      .replace(/\s+/g, '_')
-      .substring(0, 100);
-    const ext = path.extname(bestFormat.container || '.mp4') || '.mp4';
-    const filename = sanitizedTitle.endsWith(ext)
-      ? sanitizedTitle
-      : sanitizedTitle + ext;
-
-    return res.json({
-      success: true,
-      data: {
-        url: directUrl,
-        title: rawTitle,
-        filename
-      }
-    });
   } catch (err) {
-    console.error('YouTube download error:', err.message);
+    console.error('Error calling good‐server:', err.message);
     return res.status(500).json({
       success: false,
-      message: err.message
+      message: 'Failed to fetch from good server'
     });
   }
 };
