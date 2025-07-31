@@ -2959,63 +2959,62 @@ app.get('/api/audio-platform', async (req, res) => {
 });
 
 // Direct download endpoint
+// Direct download endpoint
 app.get('/api/direct', async (req, res) => {
     const { url, filename } = req.query;
-    // Add this special handling for Facebook Mobile URLs in the /api/direct endpoint
-// Right after the URL trimming section in the existing direct endpoint
-// Add this code to your /api/direct endpoint
-// Right after your Facebook handling section but before the general download logic
-// Special handling for Pinterest videos
-if (url.includes('v.pinimg.com') || (url.includes('pinimg.com') && url.includes('.mp4'))) {
-    console.log('Pinterest video URL detected, applying special handling');
     
-    const pinterestHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Range': 'bytes=0-',  // Critical for video streaming
-      'Referer': 'https://www.pinterest.com/',
-      'Origin': 'https://www.pinterest.com',
-      'Sec-Fetch-Dest': 'video',
-      'Sec-Fetch-Mode': 'cors', 
-      'Sec-Fetch-Site': 'cross-site'
-    };
-    
-    // Clean the URL - Pinterest often has escaped characters
-    url = url
-      .replace(/\\u002F/g, '/')
-      .replace(/\\\//g, '/')
-      .replace(/\\/g, '')
-      .replace(/&amp;/g, '&');
-    
-    console.log(`Using cleaned Pinterest video URL: ${url}`);
-    
-    try {
-      const downloadResp = await fetch(url, {
-        headers: pinterestHeaders,
-        redirect: 'follow'
-      });
-      
-      if (!downloadResp.ok) {
-        throw new Error(`Failed to fetch Pinterest video: ${downloadResp.status}`);
-      }
-      
-      const contentType = downloadResp.headers.get('content-type') || 'video/mp4';
-      console.log(`Pinterest video content type: ${contentType}`);
-      
-      let outputFilename = filename || 'pinterest-video.mp4';
-      
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
-      
-      downloadResp.body.pipe(res);
-      return; // Exit the function early
-    } catch (error) {
-      console.error('Pinterest video download error:', error);
-      // Continue with normal processing as fallback
+    // Special handling for Pinterest videos
+    if (url.includes('v.pinimg.com') || (url.includes('pinimg.com') && url.includes('.mp4'))) {
+        console.log('Pinterest video URL detected, applying special handling');
+        
+        const pinterestHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Range': 'bytes=0-',  // Critical for video streaming
+            'Referer': 'https://www.pinterest.com/',
+            'Origin': 'https://www.pinterest.com',
+            'Sec-Fetch-Dest': 'video',
+            'Sec-Fetch-Mode': 'cors', 
+            'Sec-Fetch-Site': 'cross-site'
+        };
+        
+        // Clean the URL - Pinterest often has escaped characters
+        const cleanedUrl = url
+            .replace(/\\u002F/g, '/')
+            .replace(/\\\//g, '/')
+            .replace(/\\/g, '')
+            .replace(/&amp;/g, '&');
+        
+        console.log(`Using cleaned Pinterest video URL: ${cleanedUrl}`);
+        
+        try {
+            const downloadResp = await fetch(cleanedUrl, {
+                headers: pinterestHeaders,
+                redirect: 'follow'
+            });
+            
+            if (!downloadResp.ok) {
+                throw new Error(`Failed to fetch Pinterest video: ${downloadResp.status}`);
+            }
+            
+            const contentType = downloadResp.headers.get('content-type') || 'video/mp4';
+            console.log(`Pinterest video content type: ${contentType}`);
+            
+            let outputFilename = filename || 'pinterest-video.mp4';
+            
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
+            
+            downloadResp.body.pipe(res);
+            return; // Exit the function early
+        } catch (error) {
+            console.error('Pinterest video download error:', error);
+            // Continue with normal processing as fallback
+        }
     }
-  }
-// Special handling for Facebook Mobile sharing URLs
+
+    // Special handling for Facebook Mobile sharing URLs
     if (url.includes('m.facebook.com/share/v/')) {
         console.log(`Facebook mobile sharing URL detected: ${url}`);
         try {
@@ -3031,11 +3030,15 @@ if (url.includes('v.pinimg.com') || (url.includes('pinimg.com') && url.includes(
         }
     }
 
-// Always use Facebook-specific headers for any Facebook URLs or fbcdn.net URLs
-// Add this section to your /api/download endpoint to handle Facebook videos properly
-// Place this after the URL trimming but before the rest of the download logic
+    // Always use Facebook-specific headers for any Facebook URLs or fbcdn.net URLs
+    let headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': new URL(url).origin,
+    };
 
-// Special handling for Facebook videos (especially those with black screen issues)
+    // Special handling for Facebook videos (especially those with black screen issues)
     if (url.includes('facebook.com') || url.includes('fb.watch') || url.includes('fb.com') ||
         url.includes('fbcdn.net') || url.includes('video.xx.fbcdn.net')) {
 
@@ -3074,115 +3077,27 @@ if (url.includes('v.pinimg.com') || (url.includes('pinimg.com') && url.includes(
             }
         }
 
-        // For Facebook, we'll try to download with specialized approach
-        // that often works better for videos that show black screen
+        // Facebook requires specific headers
+        const fbHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Range': 'bytes=0-',  // This helps with some Facebook videos
+            'Referer': 'https://www.facebook.com/',
+            'Origin': 'https://www.facebook.com',
+            'Sec-Fetch-Dest': 'video',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'cross-site',
+            'Connection': 'keep-alive'
+        };
 
-        try {
-            console.log(`Downloading Facebook video using specialized approach: ${url}`);
-
-            // Facebook requires specific headers
-            const fbHeaders = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Range': 'bytes=0-',  // This helps with some Facebook videos
-                'Referer': 'https://www.facebook.com/',
-                'Origin': 'https://www.facebook.com',
-                'Sec-Fetch-Dest': 'video',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'cross-site',
-                'Connection': 'keep-alive'
-            };
-
-            // Sometimes using a mobile user agent helps
-            if (url.includes('m.facebook.com')) {
-                fbHeaders['User-Agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1';
-            }
-
-            // Try to download with ffmpeg shell command for better compatibility
-            // This works better than direct fetch for Facebook videos with black screen
-            try {
-                const ffmpegPath = 'ffmpeg'; // Make sure ffmpeg is installed
-                const outputPath = tempFilePath;
-
-                // Create a command to download Facebook video with ffmpeg
-                // This avoids black screen issues by properly handling video streams
-                const ffmpegCmd = `${ffmpegPath} -headers "User-Agent: ${fbHeaders['User-Agent']}" -headers "Referer: ${fbHeaders.Referer}" -i "${url}" -c copy -y "${outputPath}"`;
-
-                console.log('Executing ffmpeg command for Facebook video');
-
-                const { exec } = require('child_process');
-                await new Promise((resolve, reject) => {
-                    exec(ffmpegCmd, (error, stdout, stderr) => {
-                        if (error) {
-                            console.error(`ffmpeg error: ${error.message}`);
-                            return reject(error);
-                        }
-                        resolve();
-                    });
-                });
-
-                // Check if ffmpeg created a valid file
-                if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 100000) {
-                    console.log(`Successfully downloaded Facebook video with ffmpeg: ${outputPath}`);
-
-                    // Skip the rest of the download logic since we already have the file
-                    // Set up the response
-                    const stat = fs.statSync(outputPath);
-
-                    res.setHeader('Content-Length', stat.size);
-                    res.setHeader('Content-Type', 'video/mp4');
-                    res.setHeader('Content-Disposition', `attachment; filename="facebook-video.mp4"`);
-
-                    const fileStream = fs.createReadStream(outputPath);
-                    fileStream.pipe(res);
-
-                    fileStream.on('end', () => {
-                        fs.unlink(outputPath, (err) => {
-                            if (err) console.error('Error deleting temp file:', err);
-                        });
-                    });
-
-                    return; // Exit early as we're handling the response
-                }
-            } catch (ffmpegError) {
-                console.error(`ffmpeg approach failed: ${ffmpegError.message}`);
-                // Continue to fallback methods
-            }
-
-            // If ffmpeg failed, try direct download with proper headers
-            console.log('Attempting direct download with specialized headers');
-
-            const downloadResponse = await fetch(url, {
-                headers: fbHeaders,
-                redirect: 'follow'
-            });
-
-            if (!downloadResponse.ok) {
-                throw new Error(`Direct download failed with status: ${downloadResponse.status}`);
-            }
-
-            const fileStream = fs.createWriteStream(tempFilePath);
-            await new Promise((resolve, reject) => {
-                downloadResponse.body.pipe(fileStream);
-                downloadResponse.body.on('error', reject);
-                fileStream.on('finish', resolve);
-            });
-
-            // Verify we got a valid file (not just a tiny error file)
-            const fileSize = fs.statSync(tempFilePath).size;
-            if (fileSize < 10000) {
-                throw new Error(`Downloaded file is too small (${fileSize} bytes), likely not a valid video`);
-            }
-
-            console.log(`Successfully downloaded Facebook video: ${tempFilePath}`);
-
-            // Continue with normal flow - the file is already downloaded
-        } catch (fbDownloadError) {
-            console.error(`Facebook specialized download failed: ${fbDownloadError.message}`);
-            // Continue with normal download logic as fallback
+        // Sometimes using a mobile user agent helps
+        if (url.includes('m.facebook.com')) {
+            fbHeaders['User-Agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1';
         }
+
+        headers = fbHeaders;
     }
 
     // If we have a specific referer from the query, use it
@@ -3191,6 +3106,7 @@ if (url.includes('v.pinimg.com') || (url.includes('pinimg.com') && url.includes(
             ? req.query.referer
             : `https://${req.query.referer}`;
     }
+
     if (!url) {
         return res.status(400).json({ error: 'URL is required' });
     }
@@ -3199,12 +3115,7 @@ if (url.includes('v.pinimg.com') || (url.includes('pinimg.com') && url.includes(
         console.log(`Processing direct download: ${url}`);
 
         const downloadResp = await fetch(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Referer': new URL(url).origin,
-            },
+            headers: headers,
             redirect: 'follow',
         });
 
